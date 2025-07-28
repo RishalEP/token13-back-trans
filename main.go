@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/go-redis/redis/v8"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -22,6 +25,7 @@ type WalletTransactionHistory struct {
 	ID            uint64 `gorm:"primaryKey"`
 	WalletAddress string `gorm:"index:idx_wallet_txhash,unique"` //  unique index of txhash+wallet addr
 	TxHash        string `gorm:"index:idx_wallet_txhash,unique"`
+	Chain         string `gorm:"index"`
 	FromAddress   string `gorm:"size:191"`
 	ToAddress     string `gorm:"size:191"`
 	Value         string
@@ -33,7 +37,11 @@ type WalletTransactionHistory struct {
 
 // QuickNodePayload for incoming JSON
 type QuickNodePayload struct {
+	Metadata  Metadata   `json:"metadata"`
 	Transfers []Transfer `json:"transfers"`
+}
+type Metadata struct {
+	Network string `json:"network"` // "tron-mainnet" etc
 }
 
 type Transfer struct {
@@ -57,7 +65,19 @@ func main() {
 }
 
 func initDatabase() {
-	dsn := "root:@tcp(localhost:3306)/token13_app?parseTime=true"
+	user := os.Getenv("MYSQL_USER")
+	//pass := os.Getenv("MYSQL_PASS")
+	host := os.Getenv("MYSQL_HOST")
+	port := os.Getenv("MYSQL_PORT")
+	dbname := os.Getenv("MYSQL_DBNAME")
+
+	if user == "" || host == "" || port == "" || dbname == "" {
+		log.Fatal("Missing required MySQL environment variables")
+	}
+
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", user, "", host, port, dbname)
+	log.Println("Connecting to db: ", dsn)
+
 	var err error
 	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -68,17 +88,27 @@ func initDatabase() {
 	if err != nil {
 		log.Fatalf("AutoMigrate failed: %v", err)
 	}
-	log.Println(" Connected to db")
+	log.Println("Connected to db")
 }
 
 func initRedis() {
-	rdb = redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf(" Failed to connect to Redis: %v", err)
+	host := os.Getenv("REDIS_HOST")
+	port := os.Getenv("REDIS_PORT")
+
+	if host == "" || port == "" {
+		log.Fatal("Missing required Redis environment variables")
 	}
-	log.Println(" Connected to Redis")
+
+	redisAddr := fmt.Sprintf("%s:%s", host, port)
+
+	rdb = redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	log.Println("Connected to Redis")
 }
 
 // Handler for QuickNode webhook
@@ -94,9 +124,11 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
+	parts := strings.Split(payload.Metadata.Network, "-")
+	chain := parts[0] // "tron", "eth", etc
 
 	for _, tx := range payload.Transfers {
-		processTransaction(tx)
+		processTransaction(tx, chain)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -104,12 +136,13 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Save to db & Cache
-func processTransaction(tx Transfer) {
+func processTransaction(tx Transfer, chain string) {
 	wallets := []string{tx.From, tx.To}
+	// Extract chain (e.g., "tron" from "tron-mainnet")
 
-	for _, wallet := range wallets {
+	for _, walletAddress := range wallets {
 		dbTx := WalletTransactionHistory{
-			WalletAddress: wallet,
+			WalletAddress: walletAddress,
 			TxHash:        tx.TxHash,
 			FromAddress:   tx.From,
 			ToAddress:     tx.To,
@@ -117,6 +150,7 @@ func processTransaction(tx Transfer) {
 			BlockNumber:   int64(tx.BlockNumber),
 			BlockTime:     tx.BlockTime,
 			Standard:      tx.Standard,
+			Chain:         chain,
 		}
 
 		if err := db.Create(&dbTx).Error; err != nil {
@@ -125,8 +159,7 @@ func processTransaction(tx Transfer) {
 		}
 
 		// Cache in Redis
-		// Cache in Redis
-		cacheKey := "wallet:txHistory:" + wallet
+		cacheKey := fmt.Sprintf("wallet:txHistory:%s:%s", chain, walletAddress)
 
 		// Marshal struct to JSON
 		jsonTx, err := json.Marshal(dbTx)
