@@ -66,7 +66,7 @@ func main() {
 
 func initDatabase() {
 	user := os.Getenv("MYSQL_USER")
-	//pass := os.Getenv("MYSQL_PASS")
+	pass := os.Getenv("MYSQL_PASS")
 	host := os.Getenv("MYSQL_HOST")
 	port := os.Getenv("MYSQL_PORT")
 	dbname := os.Getenv("MYSQL_DBNAME")
@@ -75,7 +75,7 @@ func initDatabase() {
 		log.Fatal("Missing required MySQL environment variables")
 	}
 
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", user, "", host, port, dbname)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", user, pass, host, port, dbname)
 	log.Println("Connecting to db: ", dsn)
 
 	var err error
