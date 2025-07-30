@@ -9,10 +9,14 @@ FROM alpine:latest
 RUN apk --no-cache add ca-certificates
 WORKDIR /app
 COPY --from=builder /app/back-trans .
-EXPOSE 8080
-ENV MYSQL_USER=user \
-    MYSQL_PASS=password \
-    MYSQL_HOST=mysql \
+
+# Expose the application port
+EXPOSE 8800
+
+# Set environment variables (these will be overridden at runtime)
+ENV MYSQL_USER=mysql \
+    MYSQL_PASS=uWxATVsM9CS9m3Z\
+    MYSQL_HOST=wallet_db \
     MYSQL_PORT=3306 \
     MYSQL_DBNAME=backtrans \
     REDIS_HOST=redis \
