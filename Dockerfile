@@ -27,7 +27,7 @@ WORKDIR /app
 COPY --from=builder /app/back-trans .
 
 # Expose the application port
-EXPOSE 8080
+EXPOSE 8800
 
 # Set environment variables (these will be overridden at runtime)
 ENV MYSQL_USER=mysql \
