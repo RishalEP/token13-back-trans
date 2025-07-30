@@ -94,6 +94,7 @@ func initDatabase() {
 func initRedis() {
 	host := os.Getenv("REDIS_HOST")
 	port := os.Getenv("REDIS_PORT")
+	password := os.Getenv("REDIS_PASSWORD")
 
 	if host == "" || port == "" {
 		log.Fatal("Missing required Redis environment variables")
@@ -102,7 +103,8 @@ func initRedis() {
 	redisAddr := fmt.Sprintf("%s:%s", host, port)
 
 	rdb = redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr:     redisAddr,
+		Password: password,
 	})
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
