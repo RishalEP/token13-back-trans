@@ -20,19 +20,22 @@ var (
 	ctx = context.Background()
 )
 
-// WalletTransactionHistory model for MySQL
 type WalletTransactionHistory struct {
-	ID            uint64 `gorm:"primaryKey"`
-	WalletAddress string `gorm:"index:idx_wallet_txhash,unique"` //  unique index of txhash+wallet addr
-	TxHash        string `gorm:"index:idx_wallet_txhash,unique"`
-	Chain         string `gorm:"index"`
-	FromAddress   string `gorm:"size:191"`
-	ToAddress     string `gorm:"size:191"`
-	Value         string
-	BlockNumber   int64
-	BlockTime     int64
-	Standard      string
-	CreatedAt     time.Time
+	ID              int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	WalletAddress   string    `gorm:"column:address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_address;index:idx_address_chain,priority:1"`
+	TxHash          string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_wallet_tx_to;index:idx_tx_hash"`
+	ToAddress       string    `gorm:"column:to_address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_to_address"`
+	FromAddress     string    `gorm:"column:from_address;size:191;index:idx_from_address"`
+	Chain           string    `gorm:"column:chain;size:20;primaryKey;index:idx_chain;index:idx_address_chain,priority:2;index:idx_chain_tx_hash,priority:1"`
+	Value           string    `gorm:"column:value"`
+	BlockNumber     int64     `gorm:"column:block_number"`
+	BlockTime       int64     `gorm:"column:block_time;index:idx_block_time"`
+	Standard        string    `gorm:"column:standard;index:idx_standard"`
+	ContractAddress string    `gorm:"column:contract_address;index:idx_contract_address"`
+	TokenName       string    `gorm:"column:token_name"`
+	TokenSymbol     string    `gorm:"column:token_symbol"`
+	TokenDecimal    uint8     `gorm:"column:token_decimal"`
+	CreatedAt       time.Time `gorm:"column:created_at"`
 }
 
 // QuickNodePayload for incoming JSON
@@ -75,6 +78,8 @@ func initDatabase() {
 		log.Fatal("Missing required MySQL environment variables")
 	}
 
+	//for local
+	//dsn := "root:@tcp(127.0.0.1:3306)/token13_app?parseTime=True"
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", user, pass, host, port, dbname)
 	log.Println("Connecting to db: ", dsn)
 
