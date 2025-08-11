@@ -27,8 +27,8 @@ jobs:
       - name: Build and push Docker image to VM registry
         run: |
           IMAGE_NAME=${{ secrets.VM_HOST }}:5000/back-trans:latest
-          docker build -t $IMAGE_NAME .
-          docker save $IMAGE_NAME | ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker load"
+          sudo docker build -t $IMAGE_NAME .
+          sudo docker save $IMAGE_NAME | ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker load"
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker push $IMAGE_NAME"
 
       # - name: Deploy with docker-compose on VM
