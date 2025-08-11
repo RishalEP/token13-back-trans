@@ -52,6 +52,13 @@ jobs:
             docker run -d --name back-trans \
               -p 8800:8800 \
               --restart always \
+              -e MYSQL_USER='${{ secrets.MYSQL_USER }}' \
+              -e MYSQL_PASS='${{ secrets.MYSQL_PASS }}' \
+              -e MYSQL_HOST='${{ secrets.MYSQL_HOST }}' \
+              -e MYSQL_PORT='${{ secrets.MYSQL_PORT }}' \
+              -e MYSQL_DBNAME='${{ secrets.MYSQL_DBNAME }}' \
+              -e REDIS_HOST='${{ secrets.REDIS_HOST }}' \
+              -e REDIS_PORT='${{ secrets.REDIS_PORT }}' \
               $IMAGE_NAME
           "
 
