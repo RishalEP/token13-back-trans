@@ -19,8 +19,8 @@ jobs:
 
       - name: Build Docker image using private base image
         run: |
-          IMAGE_NAME=${{ secrets.VM_HOST }}:5000/back-trans:latest
-          BASE_IMAGE=${{ secrets.VM_HOST }}:5000/golang:1.24-alpine
+          IMAGE_NAME=${{ secrets.VM_HOST }}/back-trans:latest
+          BASE_IMAGE=${{ secrets.VM_HOST }}/golang:1.24-alpine
 
           echo "Building Docker image with base image: $BASE_IMAGE"
 
@@ -30,7 +30,7 @@ jobs:
 
       - name: Transfer image to remote VM and load it
         run: |
-          IMAGE_NAME=${{ secrets.VM_HOST }}:5000/back-trans:latest
+          IMAGE_NAME=${{ secrets.VM_HOST }}/back-trans:latest
 
           echo "Saving and loading image on remote VM..."
 
@@ -39,7 +39,8 @@ jobs:
 
       - name: Push image from remote VM to private registry
         run: |
-          IMAGE_NAME=${{ secrets.VM_HOST }}:5000/back-trans:latest
+          #IMAGE_NAME=${{ secrets.VM_HOST }}/back-trans:latest
+          #IMAGE_NAME=registry.trainwithqadir.com/back-trans:latest
 
           echo "Pushing image to private registry from remote VM..."
 
