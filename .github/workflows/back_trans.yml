@@ -17,29 +17,30 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      # You can keep or remove this step if you want; it won't affect SSH because we disable host key checking
-     # - name: Add VM to known_hosts (optional, can be skipped)
-     #   run: |
-      #    mkdir -p ~/.ssh
-    #      echo "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-    #      chmod 644 ~/.ssh/known_hosts
-
-      - name: Build and push Docker image to VM registry
+      - name: Build Docker image using private base image
         run: |
           IMAGE_NAME=${{ secrets.VM_HOST }}:5000/back-trans:latest
-          sudo docker build -t $IMAGE_NAME .
-          sudo docker save $IMAGE_NAME | ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker load"
+          BASE_IMAGE=${{ secrets.VM_HOST }}:5000/golang:1.24-alpine
+
+          echo "Building Docker image with base image: $BASE_IMAGE"
+
+          sudo docker build \
+            --build-arg BASE_IMAGE=$BASE_IMAGE \
+            -t $IMAGE_NAME .
+
+      - name: Transfer image to remote VM and load it
+        run: |
+          IMAGE_NAME=${{ secrets.VM_HOST }}:5000/back-trans:latest
+
+          echo "Saving and loading image on remote VM..."
+
+          sudo docker save $IMAGE_NAME | \
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker load"
+
+      - name: Push image from remote VM to private registry
+        run: |
+          IMAGE_NAME=${{ secrets.VM_HOST }}:5000/back-trans:latest
+
+          echo "Pushing image to private registry from remote VM..."
+
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker push $IMAGE_NAME"
-
-      # - name: Deploy with docker-compose on VM
-      #   run: |
-      #     ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "
-      #        cd /home/backtrans/ &&
-      #        docker-compose down &&
-      #        docker-compose up -d --build
-      #       docker run -p 
-      #     "
-
-      # - name: Cleanup SSH keys
-      #   run: |
-      #     rm -rf ~/.ssh/id_rsa ~/.ssh/known_hosts
