@@ -59,6 +59,7 @@ jobs:
               -e MYSQL_DBNAME='${{ secrets.MYSQL_DBNAME }}' \
               -e REDIS_HOST='${{ secrets.REDIS_HOST }}' \
               -e REDIS_PORT='${{ secrets.REDIS_PORT }}' \
+              -e REDIS_PASSWORD='${{ secrets.REDIS_PASSWORD }}' \
               $IMAGE_NAME
           "
 
