@@ -17,11 +17,14 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
+      - name: Set image variables
+        id: vars
+        run: |
+          echo "IMAGE_NAME=${{ secrets.MY_DOMAIN }}/back-trans:latest" >> "$GITHUB_ENV"
+          echo "BASE_IMAGE=${{ secrets.MY_DOMAIN }}/golang:1.24-alpine" >> "$GITHUB_ENV"
+
       - name: Build Docker image using private base image
         run: |
-          IMAGE_NAME=${{ secrets.VM_HOST }}/back-trans:latest
-          BASE_IMAGE=${{ secrets.VM_HOST }}/golang:1.24-alpine
-
           echo "Building Docker image with base image: $BASE_IMAGE"
 
           sudo docker build \
@@ -30,17 +33,11 @@ jobs:
 
       - name: Transfer image to remote VM and load it
         run: |
-          IMAGE_NAME=${{ secrets.VM_HOST }}/back-trans:latest
-
-          echo "Saving and loading image on remote VM..."
-
+          echo "Saving and transferring image to remote VM..."
           sudo docker save $IMAGE_NAME | \
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker load"
 
-      - name: Push image from remote VM to private registry
+      - name: Push image to private registry from remote VM
         run: |
-          IMAGE_NAME=${{ secrets.VM_HOST }}/back-trans:latest
-
           echo "Pushing image to private registry from remote VM..."
-
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker push $IMAGE_NAME"
