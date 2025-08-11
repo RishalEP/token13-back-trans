@@ -1,16 +1,45 @@
-name: Backend Trans
+name: Backtrans Build and Deploy on VM
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
 
 jobs:
-
-  build:
-
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Start ssh-agent and add private key
+        uses: webfactory/ssh-agent@v0.8.1
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      # You can keep or remove this step if you want; it won't affect SSH because we disable host key checking
+     # - name: Add VM to known_hosts (optional, can be skipped)
+     #   run: |
+      #    mkdir -p ~/.ssh
+    #      echo "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+    #      chmod 644 ~/.ssh/known_hosts
+
+      - name: Build and push Docker image to VM registry
+        run: |
+          IMAGE_NAME=${{ secrets.VM_HOST }}:5000/back-trans:latest
+          docker build -t $IMAGE_NAME .
+          docker save $IMAGE_NAME | ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker load"
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker push $IMAGE_NAME"
+
+      # - name: Deploy with docker-compose on VM
+      #   run: |
+      #     ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "
+      #        cd /home/backtrans/ &&
+      #        docker-compose down &&
+      #        docker-compose up -d --build
+      #       docker run -p 
+      #     "
+
+      # - name: Cleanup SSH keys
+      #   run: |
+      #     rm -rf ~/.ssh/id_rsa ~/.ssh/known_hosts
