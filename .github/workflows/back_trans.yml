@@ -39,8 +39,7 @@ jobs:
 
       - name: Push image from remote VM to private registry
         run: |
-          #IMAGE_NAME=${{ secrets.VM_HOST }}/back-trans:latest
-          #IMAGE_NAME=registry.trainwithqadir.com/back-trans:latest
+          IMAGE_NAME=${{ secrets.VM_HOST }}/back-trans:latest
 
           echo "Pushing image to private registry from remote VM..."
 
