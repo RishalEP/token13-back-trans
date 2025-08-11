@@ -41,3 +41,17 @@ jobs:
         run: |
           echo "Pushing image to private registry from remote VM..."
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker push $IMAGE_NAME"
+
+
+      - name: Deploy container on remote VM
+        run: |
+          echo "Deploying container on remote VM..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "
+            docker stop back-trans || true && \
+            docker rm back-trans || true && \
+            docker run -d --name back-trans \
+              -p 8800:8800 \
+              --restart always \
+              $IMAGE_NAME
+          "
+
