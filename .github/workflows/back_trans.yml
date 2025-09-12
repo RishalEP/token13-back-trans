@@ -1,4 +1,4 @@
-name: Backtrans Build and Deploy on VM
+name: Backtrans CI/CD
 
 
 on:
