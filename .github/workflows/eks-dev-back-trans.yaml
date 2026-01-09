@@ -27,6 +27,9 @@ jobs:
       JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
       JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_DEV }}
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD_DEV }}
+      REDIS_URL: ${{ secrets.REDIS_URL_DEV }}
 
     steps:
       - name: Checkout
@@ -75,47 +78,44 @@ jobs:
           rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/dev/services-eks/back-trans/ \
                 $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
 
-      - name: Deploy back-trans to EKS
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_DEV }}
-          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD_DEV }}
-          REDIS_URL: ${{ secrets.REDIS_URL_DEV }}
-          LATEST_IMAGE: ${{ steps.build.outputs.IMAGE }}
 
+      - name: Deploy back-trans to EKS via Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
-            "AWS_REGION=${AWS_REGION} \
-            EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} \
-            LATEST_IMAGE=${LATEST_IMAGE} \
-            DATABASE_URL='${DATABASE_URL}' \
-            REDIS_PASSWORD='${REDIS_PASSWORD}' \
-            REDIS_URL='${REDIS_URL}' \
-            bash -s" << 'EOSSH'
+            "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
+              DATABASE_URL=${DATABASE_URL} \
+              REDIS_PASSWORD=${REDIS_PASSWORD} \
+              REDIS_URL=${REDIS_URL} \
+              bash -s" << 'EOSSH'
 
-          set -euo pipefail
-          cd ~/deploy/back-trans/dev/back-trans
+              set -euo pipefail
 
-          KCTX="--context=explorer-prod"
+              cd ~/deploy/dev/back-trans
 
-          echo "=== Creating and updating back-trans secrets at runtime ==="
-          kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
-            --from-literal=DATABASE_URL="$DATABASE_URL" \
-            --from-literal=REDIS_PASSWORD="$REDIS_PASSWORD" \
-            --from-literal=REDIS_URL="$REDIS_URL" \
-            --dry-run=client -o yaml | kubectl apply -f -
+              # aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+              KCTX="--context=explorer-prod"
 
-          echo "--- Apply Deployment & Service ---"
-          kubectl $KCTX apply -f back-trans-deployment.yaml
-          kubectl $KCTX apply -f back-trans-service.yaml
-          kubectl $KCTX -n dev apply -f back-trans-hpa.yaml
+              echo "=== Creating and updating back-trans secrets at runtime ==="
+              kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
+                --from-literal=DATABASE_URL="$DATABASE_URL" \
+                --from-literal=REDIS_PASSWORD="$REDIS_PASSWORD" \
+                --from-literal=REDIS_URL="$REDIS_URL" \
+                --dry-run=client -o yaml | kubectl $KCTX apply -f -
 
-          echo "--- Force new rollout ---"
-          kubectl $KCTX -n dev patch deployment back-trans-dev \
-            -p "{\"spec\": {\"template\": {\"metadata\": {\"annotations\": {\"force-reload\": \"$(date +%s)\"}}}}}"
+              echo "--- Apply Deployment, Service ---"
+              kubectl $KCTX -n dev apply -f back-trans-deployment.yaml
+              kubectl $KCTX -n dev apply -f back-trans-service.yaml
+              kubectl $KCTX -n dev apply -f back-trans-hpa.yaml
 
-          echo "--- Update image and rollout ---"
-          kubectl $KCTX -n dev set image deployment/back-trans-dev back-trans-dev="$LATEST_IMAGE"
-          kubectl $KCTX -n dev rollout status deployment/back-trans-dev --timeout=3m
+              echo "--- Force new rollout (permanent fix) ---"
+              kubectl $KCTX -n dev patch deployment back-trans-dev \
+                -p "{\"spec\": {\"template\": {\"metadata\": {\"annotations\": {\"force-reload\": \"$(date +%s)\"}}}}}"
 
-          kubectl $KCTX -n dev get pods,svc,deploy -l app=back-trans-dev -o wide
+              echo "--- Update image and rollout ---"
+              kubectl $KCTX -n dev set image deployment/back-trans-dev \
+                back-trans-dev="$LATEST_IMAGE"
+
+              kubectl $KCTX -n dev rollout status deployment/back-trans-dev --timeout=3m
+
+              kubectl $KCTX -n dev get pods,svc,deploy -l app=back-trans-dev -o wide
           EOSSH
