@@ -25,11 +25,13 @@ spec:
     spec:
       containers:
         - name: back-trans-dev
-          image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<ECR_REPOSITORY>:back-trans-dev-latest
+          #image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<ECR_REPOSITORY>:back-trans-dev-latest
+          image: nginx:stable
           imagePullPolicy: Always
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
+            runAsNonRoot: true
           ports:
             - containerPort: 8800
               name: http-8800
