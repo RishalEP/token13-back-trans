@@ -7,7 +7,7 @@ spec:
   selector:
     app: back-trans-dev
   ports:
-    - name: http-4444
-      port: 4444
-      targetPort: 4444
+    - name: http-8800
+      port: 8800
+      targetPort: 8800
   type: ClusterIP

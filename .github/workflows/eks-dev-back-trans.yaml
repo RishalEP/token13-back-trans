@@ -5,7 +5,7 @@ on:
     branches:
       - dev
     paths:
-      - 'eks-deploy/dev/service-eks/back-trans/**'
+      - 'eks-deploy/dev/services-eks/back-trans/**'
   workflow_dispatch:
 
 env:
@@ -72,7 +72,7 @@ jobs:
       - name: Copy back-trans manifests to Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST 'mkdir -p ~/deploy/back-trans/dev/back-trans'
-          rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/dev/service-eks/back-trans/ \
+          rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/dev/services-eks/back-trans/ \
                 $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
 
       - name: Deploy back-trans to EKS

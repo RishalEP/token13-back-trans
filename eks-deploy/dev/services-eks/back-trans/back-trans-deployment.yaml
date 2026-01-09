@@ -28,15 +28,15 @@ spec:
           image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<ECR_REPOSITORY>:back-trans-dev-latest
           imagePullPolicy: Always
           securityContext:
-            runAsNonRoot: true
-            allowPrivilegeEscalation: false
+            runAsUser: 1001
+            runAsGroup: 1001
           ports:
-            - containerPort: 4444
-              name: http-4444
+            - containerPort: 8800
+              name: http-8800
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 4444
+              port: 8800
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 3
@@ -44,7 +44,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 4444
+              port: 8800
             initialDelaySeconds: 10
             periodSeconds: 5
             failureThreshold: 3
