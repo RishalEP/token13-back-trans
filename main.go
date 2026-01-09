@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/go-redis/redis/v8"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/go-redis/redis/v8"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 var (
@@ -63,28 +64,21 @@ func main() {
 
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
 
-	log.Println("Listening on :8800")
-	log.Fatal(http.ListenAndServe(":8800", nil))
+	log.Println("Listening on :4444")
+	log.Fatal(http.ListenAndServe(":4444", nil))
 }
 
 func initDatabase() {
-	user := os.Getenv("MYSQL_USER")
-	pass := os.Getenv("MYSQL_PASS")
-	host := os.Getenv("MYSQL_HOST")
-	port := os.Getenv("MYSQL_PORT")
-	dbname := os.Getenv("MYSQL_DBNAME")
-
-	if user == "" || host == "" || port == "" || dbname == "" {
-		log.Fatal("Missing required MySQL environment variables")
+	DbUrl := os.Getenv("DATABASE_URL")
+	if DbUrl == "" {
+		DbUrl = "root:Password@tcp(127.0.0.1:3306)/token13_app?parseTime=True"
+		log.Printf("DATABASE_URL not set, using default local : %s", DbUrl)
 	}
 
-	//for local
-	//dsn := "root:@tcp(127.0.0.1:3306)/token13_app?parseTime=True"
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", user, pass, host, port, dbname)
-	log.Println("Connecting to db: ", dsn)
+	log.Println("Connecting to db: ", DbUrl)
 
 	var err error
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	db, err = gorm.Open(mysql.Open(DbUrl), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to db: %v", err)
 	}
@@ -97,18 +91,15 @@ func initDatabase() {
 }
 
 func initRedis() {
-	host := os.Getenv("REDIS_HOST")
-	port := os.Getenv("REDIS_PORT")
+	RedisURL := os.Getenv("REDIS_URL")
 	password := os.Getenv("REDIS_PASSWORD")
 
-	if host == "" || port == "" {
+	if RedisURL == "" || password == "" {
 		log.Fatal("Missing required Redis environment variables")
 	}
 
-	redisAddr := fmt.Sprintf("%s:%s", host, port)
-
 	rdb = redis.NewClient(&redis.Options{
-		Addr:     redisAddr,
+		Addr:     RedisURL,
 		Password: password,
 	})
 
