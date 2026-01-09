@@ -7,25 +7,26 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o back-trans .
 
-FROM alpine:latest
+FROM alpine:3.20
 
 # Install certs
 RUN apk --no-cache add ca-certificates
 
 # Create non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN adduser -D -u 1001 appuser
 
 WORKDIR /app
 
 # Copy binary and set ownership
 COPY --from=builder /app/back-trans .
-RUN chown -R appuser:appgroup /app
+RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
 
 EXPOSE 8800
 CMD ["./back-trans"]
+
 
 
 # ARG BASE_IMAGE
