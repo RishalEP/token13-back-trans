@@ -80,12 +80,13 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_DEV }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD_DEV }}
           REDIS_URL: ${{ secrets.REDIS_URL_DEV }}
+          LATEST_IMAGE: ${{ steps.build.outputs.IMAGE }}
 
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} \
             EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} \
-            LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
+            LATEST_IMAGE=${LATEST_IMAGE} \
             DATABASE_URL='${DATABASE_URL}' \
             REDIS_PASSWORD='${REDIS_PASSWORD}' \
             REDIS_URL='${REDIS_URL}' \
