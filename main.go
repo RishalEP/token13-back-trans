@@ -63,6 +63,9 @@ func main() {
 	initRedis()
 
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
+	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 
 	log.Println("Listening on :4444")
 	log.Fatal(http.ListenAndServe(":4444", nil))
