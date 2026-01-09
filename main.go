@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,7 +18,7 @@ import (
 
 var (
 	db  *gorm.DB
-	rdb *redis.Client
+	rdb *redis.Client // Will be nil if Redis is not configured
 	ctx = context.Background()
 )
 
@@ -60,9 +61,10 @@ type Transfer struct {
 
 func main() {
 	initDatabase()
-	initRedis()
+	initRedis() // Safe to fail
 
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
+	// Health Endpoint for Monitoring
 	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -97,18 +99,27 @@ func initRedis() {
 	RedisURL := os.Getenv("REDIS_URL")
 	password := os.Getenv("REDIS_PASSWORD")
 
-	if RedisURL == "" || password == "" {
-		log.Fatal("Missing required Redis environment variables")
+	if RedisURL == "" {
+		log.Println("Notice: REDIS_URL not found. Running in DB-only mode.")
+		return
 	}
 
-	rdb = redis.NewClient(&redis.Options{
+	client := redis.NewClient(&redis.Options{
 		Addr:     RedisURL,
 		Password: password,
 	})
 
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+	// Try to connect with a short timeout
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		log.Printf("Warning: Failed to connect to Redis at %s: %v. Running without cache.", RedisURL, err)
+		return
 	}
+
+	// Only assign to global variable if connection succeeded
+	rdb = client
 	log.Println("Connected to Redis")
 }
 
@@ -119,12 +130,26 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1. Read the raw body bytes
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Error reading body: %v", err)
+		http.Error(w, "Read Error", http.StatusInternalServerError)
+		return
+	}
+	defer r.Body.Close()
+
+	// 2. Log the exact payload received (Great for debugging)
+	log.Printf("--- New Webhook Received ---\nPayload: %s\n----------------------------", string(bodyBytes))
+
+	// 3. Unmarshal the bytes into the struct
 	var payload QuickNodePayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		log.Printf(" JSON decode error: %v", err)
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		log.Printf("JSON decode error: %v", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
+
 	parts := strings.Split(payload.Metadata.Network, "-")
 	chain := parts[0] // "tron", "eth", etc
 
@@ -139,7 +164,6 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 // Save to db & Cache
 func processTransaction(tx Transfer, chain string) {
 	wallets := []string{tx.From, tx.To}
-	// Extract chain (e.g., "tron" from "tron-mainnet")
 
 	for _, walletAddress := range wallets {
 		dbTx := WalletTransactionHistory{
@@ -154,31 +178,28 @@ func processTransaction(tx Transfer, chain string) {
 			Chain:         chain,
 		}
 
+		// --- DB INSERT (Primary Storage) ---
 		if err := db.Create(&dbTx).Error; err != nil {
-			log.Printf(" DB insert failed: %v", err)
+			log.Printf("DB insert failed: %v", err)
 			continue
 		}
 
-		// Cache in Redis
-		cacheKey := fmt.Sprintf("wallet:txHistory:%s:%s", chain, walletAddress)
+		// --- REDIS CACHE (Optional / Enhancement) ---
+		// We only run this block if rdb was successfully initialized
+		if rdb != nil {
+			cacheKey := fmt.Sprintf("wallet:txHistory:%s:%s", chain, walletAddress)
 
-		// Marshal struct to JSON
-		jsonTx, err := json.Marshal(dbTx)
-		if err != nil {
-			log.Printf("JSON marshal failed: %v", err)
-			continue
-		}
-
-		// Push to Redis
-		if err := rdb.LPush(ctx, cacheKey, jsonTx).Err(); err != nil {
-			log.Printf("Redis insert failed: %v", err)
-		}
-
-		//Trim Redis list to last 200 txs
-		if err := rdb.LTrim(ctx, cacheKey, 0, 100).Err(); err != nil {
-			log.Printf("Redis LTRIM failed: %v", err)
+			jsonTx, err := json.Marshal(dbTx)
+			if err == nil {
+				if err := rdb.LPush(ctx, cacheKey, jsonTx).Err(); err != nil {
+					log.Printf("Redis LPush failed (non-fatal): %v", err)
+				} else {
+					// Trim to last 100
+					rdb.LTrim(ctx, cacheKey, 0, 100)
+				}
+			}
 		}
 	}
 
-	log.Printf("Saved tx %s for %s", tx.TxHash, tx.From)
+	log.Printf("Processed tx %s for chain %s", tx.TxHash, chain)
 }
