@@ -92,14 +92,13 @@ jobs:
 
               cd ~/deploy/dev/back-trans
 
-              # aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
               KCTX="--context=explorer-prod"
 
               echo "=== Creating and updating back-trans secrets at runtime ==="
               kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
-                --from-literal=DATABASE_URL="$DATABASE_URL" \
-                --from-literal=REDIS_PASSWORD="$REDIS_PASSWORD" \
-                --from-literal=REDIS_URL="$REDIS_URL" \
+                --from-literal=DATABASE_URL=$DATABASE_URL \
+                --from-literal=REDIS_PASSWORD=$REDIS_PASSWORD \
+                --from-literal=REDIS_URL=$REDIS_URL \
                 --dry-run=client -o yaml | kubectl $KCTX apply -f -
 
               echo "--- Apply Deployment, Service ---"
