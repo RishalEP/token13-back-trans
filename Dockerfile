@@ -27,7 +27,7 @@ USER appuser
 EXPOSE 8800
 CMD ["./back-trans"]
 
-
+#----old code------
 
 # ARG BASE_IMAGE
 # FROM ${BASE_IMAGE:-golang:1.24-alpine} AS builder
