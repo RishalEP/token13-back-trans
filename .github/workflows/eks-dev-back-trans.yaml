@@ -112,6 +112,11 @@ jobs:
           kubectl $KCTX -n dev patch deployment back-trans-dev \
             -p "{\"spec\": {\"template\": {\"metadata\": {\"annotations\": {\"force-reload\": \"$(date +%s)\"}}}}}"
 
+          # Update deployment image
+          kubectl $KCTX -n dev set image deployment/back-trans-dev \
+            back-trans-dev="$LATEST_IMAGE"
+
+
           echo "--- Update image and rollout ---"
           kubectl $KCTX -n dev set image deployment/back-trans-dev back-trans-dev="$LATEST_IMAGE"
           kubectl $KCTX -n dev rollout status deployment/back-trans-dev --timeout=3m
