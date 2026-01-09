@@ -5,7 +5,7 @@ on:
     branches:
       - dev
     paths:
-      - 'eks-deploy/dev/services-eks/back-trans/**'
+      - 'eks-deploy/dev/service-eks/back-trans/**'
   workflow_dispatch:
 
 env:
