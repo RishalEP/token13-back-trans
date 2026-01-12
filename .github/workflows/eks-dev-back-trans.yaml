@@ -82,7 +82,7 @@ jobs:
       - name: Deploy back-trans to EKS via Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
-            "AWS_REGION='${AWS_REGION}' EKS_CLUSTER_NAME='${EKS_CLUSTER_NAME}' LATEST_IMAGE='${{ steps.build.outputs.IMAGE }}' \
+            "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
             DATABASE_URL='${DATABASE_URL}' REDIS_PASSWORD='${REDIS_PASSWORD}' REDIS_URL='${REDIS_URL}' \
             bash -s" << 'EOSSH'
 
@@ -94,9 +94,9 @@ jobs:
 
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
-              --from-literal=DATABASE_URL=${DATABASE_URL} \
-              --from-literal=REDIS_PASSWORD=${REDIS_PASSWORD} \
-              --from-literal=REDIS_URL=${REDIS_URL} \
+              --from-literal=DATABASE_URL="${DATABASE_URL}" \
+              --from-literal=REDIS_PASSWORD="${REDIS_PASSWORD}" \
+              --from-literal=REDIS_URL="${REDIS_URL}" \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
 
             echo "--- Apply Deployment, Service ---"

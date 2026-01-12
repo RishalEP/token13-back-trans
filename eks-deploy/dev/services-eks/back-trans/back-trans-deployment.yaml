@@ -27,29 +27,9 @@ spec:
         - name: back-trans-dev
           image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<ECR_REPOSITORY>:back-trans-dev-latest
           imagePullPolicy: Always
-          securityContext:
-            runAsUser: 1001
-            runAsGroup: 1001
-            runAsNonRoot: true
           ports:
             - containerPort: 8800
               name: http-8800
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8800
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            failureThreshold: 3
-
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: 8800
-            initialDelaySeconds: 10
-            periodSeconds: 5
-            failureThreshold: 3
-
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -66,11 +46,14 @@ spec:
                 secretKeyRef:
                   name: back-trans-dev-secrets
                   key: REDIS_PASSWORD
+          securityContext:
+            runAsUser: 1001
+            runAsGroup: 1001
+            runAsNonRoot: true
           resources:
             requests:
               cpu: 50m
               memory: 128Mi
             limits:
               cpu: 100m
-              memory: 256Mi   
-
+              memory: 256Mi
