@@ -66,6 +66,7 @@ func main() {
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
 	// Health Endpoint for Monitoring
 	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Logging Health Endpoint Hit!")
 		w.WriteHeader(http.StatusOK)
 	})
 
