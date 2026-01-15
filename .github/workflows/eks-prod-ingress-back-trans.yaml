@@ -1,7 +1,7 @@
 name: Back-trans Prod Ingress CI/CD to EKS Production
 
 on:
-  push:
+  # push:
     # branches:
     #   - main
     # paths:
