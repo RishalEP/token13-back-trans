@@ -1,0 +1,118 @@
+name: Back-trans Backend CI/CD To EKS Production
+
+on:
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - 'eks-deploy/prod/services-eks/back-trans/**'
+  workflow_dispatch:
+
+env:
+  IMAGE_BASENAME: back-trans-prod
+  LATEST_TAG: back-trans-prod-latest
+  ROLLBACK_TAG: back-trans-prod-rollback
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+      JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
+      JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_PROD }}
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD_PROD }}
+      REDIS_URL: ${{ secrets.REDIS_URL_PROD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | \
+          docker login --username AWS --password-stdin \
+          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Shift latest → rollback
+        run: |
+          set -euo pipefail
+          REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+          SRC="${REPO}:${LATEST_TAG}"
+          DST="${REPO}:${ROLLBACK_TAG}"
+          if docker pull "${SRC}"; then
+            docker tag "${SRC}" "${DST}"
+            docker push "${DST}"
+          fi
+
+      - name: Build & push back-trans image
+        id: build
+        run: |
+          REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+          IMAGE="${REPO}:${LATEST_TAG}"
+          docker build -t "$IMAGE" -f ./Dockerfile .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_JUMP_PRIVATE_KEY }}
+
+      - name: Copy back-trans manifests to Bastion
+        run: |
+          ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST 'mkdir -p ~/deploy/back-trans/prod/back-trans'
+          rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/prod/services-eks/back-trans/ \
+                $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/prod/back-trans
+
+
+      - name: Deploy back-trans to EKS via Bastion
+        run: |
+          ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
+            "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
+            DATABASE_URL='${DATABASE_URL}' REDIS_PASSWORD='${REDIS_PASSWORD}' REDIS_URL='${REDIS_URL}' \
+            bash -s" << 'EOSSH'
+
+            set -euo pipefail
+
+            cd ~/deploy/back-trans/prod/back-trans
+
+            KCTX="--context=explorer-prod"
+
+            echo "=== Creating and updating back-trans secrets at runtime ==="
+            kubectl $KCTX -n prod create secret generic back-trans-prod-secrets \
+              --from-literal=DATABASE_URL="${DATABASE_URL}" \
+              --from-literal=REDIS_PASSWORD="${REDIS_PASSWORD}" \
+              --from-literal=REDIS_URL="${REDIS_URL}" \
+              --dry-run=client -o yaml | kubectl $KCTX apply -f -
+
+            echo "--- Apply Deployment, Service ---"
+            kubectl $KCTX -n prod apply -f back-trans-deployment.yaml
+            kubectl $KCTX -n prod apply -f back-trans-service.yaml
+            kubectl $KCTX -n prod apply -f back-trans-hpa.yaml
+
+            echo "--- Force new rollout (permanent fix) ---"
+            kubectl $KCTX -n prod patch deployment back-trans-prod \
+              -p "{\"spec\": {\"template\": {\"metadata\": {\"annotations\": {\"force-reload\": \"$(date +%s)\"}}}}}"
+
+            echo "--- Update image and rollout ---"
+            kubectl $KCTX -n prod set image deployment/back-trans-prod \
+              back-trans-prod="$LATEST_IMAGE"
+
+            kubectl $KCTX -n prod rollout status deployment/back-trans-prod --timeout=3m
+
+            kubectl $KCTX -n prod get pods,svc,deploy -l app=back-trans-prod -o wide
+          EOSSH
