@@ -161,7 +161,7 @@ jobs:
                   \"tag\": \"div\",
                   \"text\": {
                     \"tag\": \"lark_md\",
-                    \"content\": \"📦 **Repository:** $REPO_NAME\n🔖 Commit: \`$SHORT_SHA\`\n⏰ Deployment Time: $DEPLOY_TIME\n🌍 Environment: ${{ env.ENVIRONMENT }}\n👤 Deployed By: ${{ github.actor }}\n\n📱 **Affected Products:**\n• 🍎 iOS: ${{ env.IOS_VERSION }}\n• 🤖 Android: ${{ env.ANDROID_VERSION }}\n• 🌐 Web: ${{ env.WEB_VERSION }}\n\n🧩 Backend Services Impacted:\n• ⚙️ ${{ env.BACKEND_SERVICE }}\n\n📊 Status: $STATUS\n👉 [View Logs]($RUN_URL)\"
+                    \"content\": \"📦 **Repository:** $REPO_NAME\n🔖 Commit: \`$SHORT_SHA\`\n⏰ Deployment Time: $DEPLOY_TIME\n🌍 Environment: ${{ env.ENVIRONMENT }}\n👤 Deployed By: ${{ github.actor }}\n\n📱 **Affected Products:**\n• 🍎 iOS: ${{ env.IOS_VERSION }}\n• 🤖 Android: ${{ env.ANDROID_VERSION }}\n\n🧩 Backend Services Impacted:\n• ⚙️ ${{ env.BACKEND_SERVICE }}\n\n📊 Status: $STATUS\n👉 [View Logs]($RUN_URL)\"
                   }
                 }
               ]
