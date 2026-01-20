@@ -13,6 +13,13 @@ env:
   LATEST_TAG: back-trans-dev-latest
   ROLLBACK_TAG: back-trans-dev-rollback
 
+  # Notification metadata
+  ENVIRONMENT: Development
+  IOS_VERSION: "1.3v"
+  ANDROID_VERSION: "NA"
+  WEB_VERSION: "extension 1.0v"
+  BACKEND_SERVICE: back-trans-dev
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -116,3 +123,48 @@ jobs:
 
             kubectl $KCTX -n dev get pods,svc,deploy -l app=back-trans-dev -o wide
           EOSSH
+      # ===============================
+      # LARK NOTIFICATION (ALWAYS)
+      # ===============================
+      - name: Notify Lark – Deployment Status
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          DEPLOY_TIME=$(TZ=Asia/Dubai date '+%d/%m/%Y & %I:%M %p')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          REPO_NAME=$(basename "${{ github.repository }}")
+
+          ICON="ℹ️"
+          TITLE="Deployment Update"
+          if [ "$STATUS" = "success" ]; then
+            ICON="✅"
+            TITLE="Deployment Successful"
+          elif [ "$STATUS" = "failure" ]; then
+            ICON="🚨"
+            TITLE="Deployment Failed"
+          fi
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST "${{ secrets.LARK_WEBHOOK_URL_DEV }}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"msg_type\": \"interactive\",
+            \"card\": {
+              \"header\": {
+                \"title\": {
+                  \"tag\": \"plain_text\",
+                  \"content\": \"$ICON $REPO_NAME – $TITLE\"
+                }
+              },
+              \"elements\": [
+                {
+                  \"tag\": \"div\",
+                  \"text\": {
+                    \"tag\": \"lark_md\",
+                    \"content\": \"📦 **Repository:** $REPO_NAME\n🔖 Commit: \`$SHORT_SHA\`\n⏰ Deployment Time: $DEPLOY_TIME\n🌍 Environment: ${{ env.ENVIRONMENT }}\n👤 Deployed By: ${{ github.actor }}\n\n📱 **Affected Products:**\n• 🍎 iOS: ${{ env.IOS_VERSION }}\n• 🤖 Android: ${{ env.ANDROID_VERSION }}\n• 🌐 Web: ${{ env.WEB_VERSION }}\n\n🧩 Backend Services Impacted:\n• ⚙️ ${{ env.BACKEND_SERVICE }}\n\n📊 Status: $STATUS\n👉 [View Logs]($RUN_URL)\"
+                  }
+                }
+              ]
+            }
+          }"

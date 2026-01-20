@@ -23,6 +23,10 @@ jobs:
       JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
       JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
 
+      # Notification metadata
+      ENVIRONMENT: Development
+      BACKEND_SERVICE: back-trans-dev-ingress
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -73,3 +77,48 @@ jobs:
               kubectl apply -f .
 
           EOSSH
+      # ===============================
+      # LARK NOTIFICATION (ALWAYS)
+      # ===============================
+      - name: Notify Lark – Deployment Status
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          DEPLOY_TIME=$(TZ=Asia/Dubai date '+%d/%m/%Y & %I:%M %p')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          REPO_NAME=$(basename "${{ github.repository }}")
+
+          ICON="ℹ️"
+          TITLE="Deployment Update"
+          if [ "$STATUS" = "success" ]; then
+            ICON="✅"
+            TITLE="Deployment Successful"
+          elif [ "$STATUS" = "failure" ]; then
+            ICON="🚨"
+            TITLE="Deployment Failed"
+          fi
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST "${{ secrets.LARK_WEBHOOK_URL_DEV }}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"msg_type\": \"interactive\",
+            \"card\": {
+              \"header\": {
+                \"title\": {
+                  \"tag\": \"plain_text\",
+                  \"content\": \"$ICON $REPO_NAME – $TITLE\"
+                }
+              },
+              \"elements\": [
+                {
+                  \"tag\": \"div\",
+                  \"text\": {
+                    \"tag\": \"lark_md\",
+                    \"content\": \"📦 **Repository:** $REPO_NAME\n🔖 Commit: \`$SHORT_SHA\`\n⏰ Deployment Time: $DEPLOY_TIME\n🌍 Environment: ${{ env.ENVIRONMENT }}\n👤 Deployed By: ${{ github.actor }}\n\n🧩 Backend Services Impacted:\n• ⚙️ ${{ env.BACKEND_SERVICE }}\n\n📊 Status: $STATUS\n👉 [View Logs]($RUN_URL)\"
+                  }
+                }
+              ]
+            }
+          }"
