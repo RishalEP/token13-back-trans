@@ -15,9 +15,8 @@ env:
 
   # Notification metadata
   ENVIRONMENT: Development
-  IOS_VERSION: "1.3v"
+  IOS_VERSION: "1.4v"
   ANDROID_VERSION: "NA"
-  WEB_VERSION: "extension 1.0v"
   BACKEND_SERVICE: back-trans-dev
 
 jobs:
