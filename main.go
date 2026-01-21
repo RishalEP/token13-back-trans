@@ -164,6 +164,7 @@ func initDatabase() {
 
 func initRedis() {
 	redisURL := os.Getenv("REDIS_URL")
+	log.Printf("REDIS_URL: %s", redisURL)
 	if redisURL == "" {
 		log.Println("Notice: REDIS_URL not set. Running without Redis.")
 		return
