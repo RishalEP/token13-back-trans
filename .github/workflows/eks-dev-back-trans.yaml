@@ -4,8 +4,8 @@ on:
   push:
     branches:
       - dev
-    paths:
-      - 'eks-deploy/dev/services-eks/back-trans/**'
+    # paths:
+    #   - 'eks-deploy/dev/services-eks/back-trans/**'
   workflow_dispatch:
 
 env:
