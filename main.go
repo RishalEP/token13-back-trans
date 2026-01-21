@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcutil/base58"
 	"github.com/go-redis/redis/v8"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -280,7 +282,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 // 5. TRON PROCESSOR
 // ---------------------------------------------------------
 func processTronTransaction(tx Transfer) {
-	// The candidate addresses to record history for
+	// We loop through the RAW HEX addresses from QuickNode
 	wallets := []string{tx.From, tx.To}
 
 	// 1. Format Amount
@@ -304,26 +306,26 @@ func processTronTransaction(tx Transfer) {
 		}
 	}
 
-	// 3. LOOP AND FILTER
-	for _, walletAddr := range wallets {
-		if walletAddr == "" {
+	for _, walletHex := range wallets {
+		if walletHex == "" {
 			continue
 		}
 
-		// Check if this address belongs to YOUR user.
-		// If not, skip it. We don't want history for strangers.
-		if !isWalletWatched(walletAddr) {
-			continue
+		// 1. Convert Hex to Base58 (T-Address) ONLY for the check
+		walletBase58 := HexToTronAddress(walletHex)
+
+		// 2. Check Redis using the Base58 address
+		if !isWalletWatched(walletBase58) {
+			continue // Not our user
 		}
-		// ------------------------
 
 		direction := "receive"
-		if strings.EqualFold(walletAddr, tx.From) {
+		if strings.EqualFold(walletHex, tx.From) {
 			direction = "send"
 		}
 
 		dbTx := WalletTransactionHistory{
-			WalletAddress:   walletAddr,
+			WalletAddress:   walletHex,
 			TxHash:          tx.TxHash,
 			Chain:           "tron",
 			BlockNumber:     int64(tx.BlockNumber),
@@ -346,18 +348,16 @@ func processTronTransaction(tx Transfer) {
 			CostInUsd:       0,
 		}
 
-		// Insert
 		err := db.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
 			DoNothing: true,
 		}).Create(&dbTx).Error
 
 		if err != nil {
-			log.Printf("[TRON] DB Error for %s: %v", walletAddr, err)
+			log.Printf("[TRON] DB Error for %s: %v", walletHex, err)
 		} else {
-			// Only update Redis if we actually inserted a row
-			log.Printf("[TRON] Saved History for USER %s", walletAddr)
-			updateRedis(walletAddr, "tron", dbTx)
+			log.Printf("[TRON] Saved Tx for %s (Match Found via %s)", walletHex, walletBase58)
+			updateRedis(walletHex, "tron", dbTx)
 		}
 	}
 }
@@ -480,6 +480,24 @@ func updateRedis(wallet, chain string, data interface{}) {
 		rdb.LPush(ctx, cacheKey, jsonBytes)
 		rdb.LTrim(ctx, cacheKey, 0, 199)
 	}
+}
+
+func HexToTronAddress(hexStr string) string {
+	hexStr = strings.TrimPrefix("0x", hexStr)
+
+	if len(hexStr) == 0 {
+		return ""
+	}
+	if len(hexStr) == 40 {
+		hexStr = "40" + hexStr
+	}
+
+	inputBytes, err := hex.DecodeString(hexStr)
+	if err != nil {
+		log.Printf("Error decoding hex string: %v", err)
+		return ""
+	}
+	return base58.CheckEncode(inputBytes[1:], inputBytes[0])
 }
 
 func cleanHex(h string) string {
