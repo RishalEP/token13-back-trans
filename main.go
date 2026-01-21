@@ -163,13 +163,21 @@ func initDatabase() {
 }
 
 func initRedis() {
-	RedisURL := os.Getenv("REDIS_URL")
-	if RedisURL == "" {
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
 		log.Println("Notice: REDIS_URL not set. Running without Redis.")
 		return
 	}
-	rdb = redis.NewClient(&redis.Options{Addr: RedisURL})
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+
+	opt, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Printf("Invalid REDIS_URL: %v", err)
+		return
+	}
+
+	rdb = redis.NewClient(opt)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
