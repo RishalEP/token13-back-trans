@@ -124,6 +124,40 @@ type Transfer struct {
 	TokenDecimals int    `json:"decimals,omitempty"`
 }
 
+const (
+	WatchedWalletKey = "watched_wallets"
+)
+
+//Load Addresses From DB into Redis
+
+func LoadWatchedAddresses() {
+	log.Println("Loading Watched Addresses from DB")
+
+	var addresses []string
+
+	results := db.Table("wallet_addresses").Pluck("address", &addresses)
+	if results.Error != nil {
+		log.Printf("Error loading watched addresses: %v", results.Error)
+	}
+
+	if len(addresses) > 0 {
+		rdb.Del(ctx, WatchedWalletKey)
+		formatted := make([]interface{}, len(addresses))
+		for i, v := range addresses {
+			formatted[i] = v
+		}
+
+		err := rdb.SAdd(ctx, WatchedWalletKey, formatted...).Err()
+		if err != nil {
+			log.Printf("Error saving watched addresses to Redis: %v", err)
+		} else {
+			log.Printf("Loaded %d watched addresses to Redis", len(addresses))
+		}
+	} else {
+		log.Println("No watched addresses found in DB to watch!")
+	}
+}
+
 // ---------------------------------------------------------
 // 3. MAIN & INIT
 // ---------------------------------------------------------
@@ -131,6 +165,7 @@ type Transfer struct {
 func main() {
 	initDatabase()
 	initRedis()
+	LoadWatchedAddresses()
 
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
 	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
@@ -245,17 +280,15 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 // 5. TRON PROCESSOR
 // ---------------------------------------------------------
 func processTronTransaction(tx Transfer) {
+	// The candidate addresses to record history for
 	wallets := []string{tx.From, tx.To}
-	log.Printf("[TRON] Processing Tx: %s", tx.TxHash)
 
 	// 1. Format Amount
 	amountStr := tx.Value
-	decimals := 6 // Default TRX
+	decimals := 6
 	if tx.TokenDecimals > 0 {
 		decimals = tx.TokenDecimals
 	}
-
-	// Only format if we have a valid hex/int string
 	if tx.Value != "" && tx.Value != "0" {
 		valBig, _ := new(big.Int).SetString(cleanHex(tx.Value), 0)
 		if valBig != nil {
@@ -263,7 +296,7 @@ func processTronTransaction(tx Transfer) {
 		}
 	}
 
-	// 2. Parse Cost (String -> Float)
+	// 2. Parse Cost
 	var costFloat float64 = 0
 	if tx.CostInTrx != "" {
 		if s, err := strconv.ParseFloat(tx.CostInTrx, 64); err == nil {
@@ -271,10 +304,18 @@ func processTronTransaction(tx Transfer) {
 		}
 	}
 
+	// 3. LOOP AND FILTER
 	for _, walletAddr := range wallets {
 		if walletAddr == "" {
 			continue
 		}
+
+		// Check if this address belongs to YOUR user.
+		// If not, skip it. We don't want history for strangers.
+		if !isWalletWatched(walletAddr) {
+			continue
+		}
+		// ------------------------
 
 		direction := "receive"
 		if strings.EqualFold(walletAddr, tx.From) {
@@ -299,15 +340,13 @@ func processTronTransaction(tx Transfer) {
 			TokenDecimal:    uint8(decimals),
 			Direction:       direction,
 			CreatedAt:       time.Now(),
-
-			// MAPPING JSON FIELDS TO DB COLUMNS
-			BandwidthUsed: tx.NetUsage,   // json:"net_usage"
-			EnergyUsed:    tx.EnergyUsed, // json:"energy_used"
-			CostInTrx:     costFloat,     // json:"cost_in_trx"
-			CostInUsd:     0,
+			BandwidthUsed:   tx.NetUsage,
+			EnergyUsed:      tx.EnergyUsed,
+			CostInTrx:       costFloat,
+			CostInUsd:       0,
 		}
 
-		// INSERT IGNORE
+		// Insert
 		err := db.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
 			DoNothing: true,
@@ -316,10 +355,36 @@ func processTronTransaction(tx Transfer) {
 		if err != nil {
 			log.Printf("[TRON] DB Error for %s: %v", walletAddr, err)
 		} else {
-			log.Printf("[TRON] Saved Tx for %s | Bandwidth: %d | Energy: %d | Cost: %f", walletAddr, tx.NetUsage, tx.EnergyUsed, costFloat)
+			// Only update Redis if we actually inserted a row
+			log.Printf("[TRON] Saved History for USER %s", walletAddr)
 			updateRedis(walletAddr, "tron", dbTx)
 		}
 	}
+}
+
+// isWalletWatched checks Redis & DB to see if this address belongs to a user.
+func isWalletWatched(address string) bool {
+	//Check Redis First
+	if rdb == nil {
+		_, err := rdb.SIsMember(ctx, WatchedWalletKey, address).Result()
+		if err != nil {
+			return true
+		}
+	}
+
+	//Check DB First
+	var count int64
+	err := db.Table("wallet_addresses").Where("address = ?", address).Count(&count).Error
+	if err != nil {
+		log.Printf("DB Error: %v", err)
+		return false
+	}
+
+	//If Found in DB, Add to Redis
+	if count > 0 && rdb != nil {
+		rdb.SAdd(ctx, WatchedWalletKey, address)
+	}
+	return count > 0
 }
 
 // ---------------------------------------------------------
