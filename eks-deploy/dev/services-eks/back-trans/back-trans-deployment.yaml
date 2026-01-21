@@ -41,11 +41,6 @@ spec:
                 secretKeyRef:
                   name: back-trans-dev-secrets
                   key: REDIS_URL
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: back-trans-dev-secrets
-                  key: REDIS_PASSWORD
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001

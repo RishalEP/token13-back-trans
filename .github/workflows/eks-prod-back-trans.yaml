@@ -28,7 +28,6 @@ jobs:
       JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_PROD }}
-      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD_PROD }}
       REDIS_URL: ${{ secrets.REDIS_URL_PROD }}
 
       #Notification metadata
@@ -89,7 +88,7 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_PASSWORD='${REDIS_PASSWORD}' REDIS_URL='${REDIS_URL}' \
+            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -101,7 +100,6 @@ jobs:
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n prod create secret generic back-trans-prod-secrets \
               --from-literal=DATABASE_URL="${DATABASE_URL}" \
-              --from-literal=REDIS_PASSWORD="${REDIS_PASSWORD}" \
               --from-literal=REDIS_URL="${REDIS_URL}" \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
 
