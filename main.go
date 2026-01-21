@@ -6,32 +6,48 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
 	db  *gorm.DB
-	rdb *redis.Client // Will be nil if Redis is not configured
+	rdb *redis.Client
 	ctx = context.Background()
 )
 
+// ---------------------------------------------------------
+// 1. DATABASE MODELS (UNCHANGED)
+// ---------------------------------------------------------
+
+// TRON Schema
 type WalletTransactionHistory struct {
 	ID              int64     `gorm:"column:id;primaryKey;autoIncrement"`
 	WalletAddress   string    `gorm:"column:address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_address;index:idx_address_chain,priority:1"`
 	TxHash          string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_wallet_tx_to;index:idx_tx_hash"`
-	ToAddress       string    `gorm:"column:to_address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_to_address"`
-	FromAddress     string    `gorm:"column:from_address;size:191;index:idx_from_address"`
-	Chain           string    `gorm:"column:chain;size:20;primaryKey;index:idx_chain;index:idx_address_chain,priority:2;index:idx_chain_tx_hash,priority:1"`
-	Value           string    `gorm:"column:value"`
+	Chain           string    `gorm:"column:chain;size:20;primaryKey;index:idx_chain"`
 	BlockNumber     int64     `gorm:"column:block_number"`
 	BlockTime       int64     `gorm:"column:block_time;index:idx_block_time"`
+	FromAddress     string    `gorm:"column:from_address;size:191;index:idx_from_address"`
+	ToAddress       string    `gorm:"column:to_address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_to_address"`
+	Amount          string    `gorm:"column:token_amount"`
+	FiatValue       float64   `gorm:"column:fiat_value;type:decimal(20,8);default:0"`
+	BandwidthUsed   int64     `gorm:"column:bandwidth_used"`
+	EnergyUsed      int64     `gorm:"column:energy_used"`
+	CostInTrx       float64   `gorm:"column:cost_in_trx;type:decimal(20,8);default:0"`
+	CostInUsd       float64   `gorm:"column:cost_in_usd;type:decimal(20,8);default:0"`
+	Direction       string    `gorm:"column:direction;size:10"`
+	Status          string    `json:"status" gorm:"type:varchar(20);default:'success'"`
+	TransactionType string    `json:"transaction_type" gorm:"type:varchar(50);default:'transfer'"`
 	Standard        string    `gorm:"column:standard;index:idx_standard"`
 	ContractAddress string    `gorm:"column:contract_address;index:idx_contract_address"`
 	TokenName       string    `gorm:"column:token_name"`
@@ -40,48 +56,98 @@ type WalletTransactionHistory struct {
 	CreatedAt       time.Time `gorm:"column:created_at"`
 }
 
-// QuickNodePayload for incoming JSON
+// EVM Schema
+type EvmTransactionHistory struct {
+	ID              int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	WalletAddress   string    `gorm:"column:address;size:191;uniqueIndex:idx_evm_tx_to;index:idx_address;index:idx_address_chain,priority:1"`
+	TxHash          string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_evm_tx_to;index:idx_tx_hash"`
+	Chain           string    `gorm:"column:chain;size:20;primaryKey;index:idx_chain"`
+	BlockNumber     int64     `gorm:"column:block_number"`
+	BlockTime       int64     `gorm:"column:block_time;index:idx_block_time"`
+	FromAddress     string    `gorm:"column:from_address;size:191;index:idx_from_address"`
+	ToAddress       string    `gorm:"column:to_address;size:191;index:idx_to_address"`
+	Amount          string    `gorm:"column:token_amount"`
+	GasUsed         int64     `gorm:"column:gas_used"`
+	GasPrice        string    `gorm:"column:gas_price"`
+	NetworkFee      string    `gorm:"column:network_fee"`
+	Status          string    `gorm:"column:status;type:varchar(20);default:'success'"`
+	TransactionType string    `gorm:"column:transaction_type;type:varchar(50);default:'transfer'"`
+	MethodId        string    `gorm:"column:method_id;size:100"`
+	Standard        string    `gorm:"column:standard;index:idx_standard"`
+	ContractAddress string    `gorm:"column:contract_address;index:idx_contract_address"`
+	TokenName       string    `gorm:"column:token_name"`
+	TokenSymbol     string    `gorm:"column:token_symbol"`
+	TokenDecimal    uint8     `gorm:"column:token_decimal"`
+	Direction       string    `gorm:"column:direction;size:10"`
+	CreatedAt       time.Time `gorm:"column:created_at"`
+}
+
+func (t *WalletTransactionHistory) TableName() string { return "tron_transaction_histories" }
+func (t *EvmTransactionHistory) TableName() string    { return "evm_transaction_histories" }
+
+// ---------------------------------------------------------
+// 2. QUICKNODE PAYLOAD STRUCTURES (MAPPED TO JS OUTPUT)
+// ---------------------------------------------------------
+
 type QuickNodePayload struct {
 	Metadata  Metadata   `json:"metadata"`
 	Transfers []Transfer `json:"transfers"`
 }
 type Metadata struct {
-	Network string `json:"network"` // "tron-mainnet" etc
+	Network string `json:"network"`
 }
 
+// Transfer Struct - Matches the JS snake_case output
 type Transfer struct {
-	BlockNumber int    `json:"blockNumber"`
-	BlockTime   int64  `json:"blockTime"`
-	From        string `json:"from"`
-	To          string `json:"to"`
+	// Common Fields
+	BlockNumber int    `json:"block_number"`
+	BlockTime   int64  `json:"block_time"`
+	From        string `json:"from_address"`
+	To          string `json:"to_address"`
 	Standard    string `json:"standard"`
-	TxHash      string `json:"txHash"`
-	Value       string `json:"value"`
+	TxHash      string `json:"tx_hash"`
+	Value       string `json:"token_amount"`
+	Contract    string `json:"contract_address"`
+
+	// TRON Specific (Mapped from JS snake_case)
+	NetUsage   int64  `json:"net_usage,omitempty"` // Maps to BandwidthUsed
+	EnergyUsed int64  `json:"energy_used,omitempty"`
+	CostInTrx  string `json:"cost_in_trx,omitempty"` // String decimal
+
+	// EVM Specific
+	GasUsed           string `json:"gasUsed,omitempty"`
+	EffectiveGasPrice string `json:"effectiveGasPrice,omitempty"`
+
+	// Token Info
+	TokenName     string `json:"tokenName,omitempty"`
+	TokenSymbol   string `json:"tokenSymbol,omitempty"`
+	TokenDecimals int    `json:"decimals,omitempty"`
 }
+
+// ---------------------------------------------------------
+// 3. MAIN & INIT
+// ---------------------------------------------------------
 
 func main() {
 	initDatabase()
-	initRedis() // Safe to fail
+	initRedis()
 
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
-	// Health Endpoint for Monitoring
 	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Logging Health Endpoint Hit!")
 		w.WriteHeader(http.StatusOK)
 	})
 
-	log.Println("Listening on :8800")
+	log.Println("Backtrans Service Listening on :8800")
 	log.Fatal(http.ListenAndServe(":8800", nil))
 }
 
 func initDatabase() {
 	DbUrl := os.Getenv("DATABASE_URL")
 	if DbUrl == "" {
+		// Replace with your actual local string if needed
 		DbUrl = "root:Password@tcp(127.0.0.1:3306)/token13_app?parseTime=True"
-		log.Printf("DATABASE_URL not set, using default local : %s", DbUrl)
+		log.Printf("DATABASE_URL not set, using default: %s", DbUrl)
 	}
-
-	log.Println("Connecting to db: ", DbUrl)
 
 	var err error
 	db, err = gorm.Open(mysql.Open(DbUrl), &gorm.Config{})
@@ -89,61 +155,49 @@ func initDatabase() {
 		log.Fatalf("Failed to connect to db: %v", err)
 	}
 
-	err = db.AutoMigrate(&WalletTransactionHistory{})
-	if err != nil {
+	// AutoMigrate both tables to ensure they exist (wont change schema if already exists)
+	if err := db.AutoMigrate(&WalletTransactionHistory{}, &EvmTransactionHistory{}); err != nil {
 		log.Fatalf("AutoMigrate failed: %v", err)
 	}
-	log.Println("Connected to db")
+	log.Println("Connected to DB and Tables Checked")
 }
 
 func initRedis() {
 	RedisURL := os.Getenv("REDIS_URL")
-	password := os.Getenv("REDIS_PASSWORD")
-
 	if RedisURL == "" {
-		log.Println("Notice: REDIS_URL not found. Running in DB-only mode.")
+		log.Println("Notice: REDIS_URL not set. Running without Redis.")
 		return
 	}
-
-	client := redis.NewClient(&redis.Options{
-		Addr:     RedisURL,
-		Password: password,
-	})
-
-	// Try to connect with a short timeout
-	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	rdb = redis.NewClient(&redis.Options{Addr: RedisURL})
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	if err := client.Ping(pingCtx).Err(); err != nil {
-		log.Printf("Warning: Failed to connect to Redis at %s: %v. Running without cache.", RedisURL, err)
-		return
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Printf("Redis connection failed: %v", err)
+		rdb = nil
+	} else {
+		log.Println("Connected to Redis")
 	}
-
-	// Only assign to global variable if connection succeeded
-	rdb = client
-	log.Println("Connected to Redis")
 }
 
-// Handler for QuickNode webhook
+// ---------------------------------------------------------
+// 4. WEBHOOK HANDLER
+// ---------------------------------------------------------
+
 func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// 1. Read the raw body bytes
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("Error reading body: %v", err)
+		log.Printf("Read error: %v", err)
 		http.Error(w, "Read Error", http.StatusInternalServerError)
 		return
 	}
 	defer r.Body.Close()
 
-	// 2. Log the exact payload received (Great for debugging)
-	log.Printf("--- New Webhook Received ---\nPayload: %s\n----------------------------", string(bodyBytes))
-
-	// 3. Unmarshal the bytes into the struct
 	var payload QuickNodePayload
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		log.Printf("JSON decode error: %v", err)
@@ -151,56 +205,224 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parts := strings.Split(payload.Metadata.Network, "-")
-	chain := parts[0] // "tron", "eth", etc
+	log.Printf("Received Batch. Network: %s | Count: %d", payload.Metadata.Network, len(payload.Transfers))
+
+	// Basic network detection
+	network := strings.ToLower(payload.Metadata.Network)
+	var chainFamily string
+	if strings.Contains(network, "tron") {
+		chainFamily = "tron"
+	} else if strings.Contains(network, "ethereum") || strings.Contains(network, "eth") {
+		chainFamily = "eth"
+	} else {
+		// Fallback to standard check if needed, or assume Tron if your stream is Tron-only
+		chainFamily = "eth"
+	}
 
 	for _, tx := range payload.Transfers {
-		processTransaction(tx, chain)
+		// Safety check: if standard is native or TRC20/ERC20 but chain is ambiguous
+		if chainFamily == "tron" {
+			processTronTransaction(tx)
+		} else {
+			processEvmTransaction(tx)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Received"))
 }
 
-// Save to db & Cache
-func processTransaction(tx Transfer, chain string) {
+// ---------------------------------------------------------
+// 5. TRON PROCESSOR
+// ---------------------------------------------------------
+func processTronTransaction(tx Transfer) {
 	wallets := []string{tx.From, tx.To}
+	log.Printf("[TRON] Processing Tx: %s", tx.TxHash)
 
-	for _, walletAddress := range wallets {
-		dbTx := WalletTransactionHistory{
-			WalletAddress: walletAddress,
-			TxHash:        tx.TxHash,
-			FromAddress:   tx.From,
-			ToAddress:     tx.To,
-			Value:         tx.Value,
-			BlockNumber:   int64(tx.BlockNumber),
-			BlockTime:     tx.BlockTime,
-			Standard:      tx.Standard,
-			Chain:         chain,
-		}
+	// 1. Format Amount
+	amountStr := tx.Value
+	decimals := 6 // Default TRX
+	if tx.TokenDecimals > 0 {
+		decimals = tx.TokenDecimals
+	}
 
-		// --- DB INSERT (Primary Storage) ---
-		if err := db.Create(&dbTx).Error; err != nil {
-			log.Printf("DB insert failed: %v", err)
-			continue
-		}
-
-		// --- REDIS CACHE (Optional / Enhancement) ---
-		// We only run this block if rdb was successfully initialized
-		if rdb != nil {
-			cacheKey := fmt.Sprintf("wallet:txHistory:%s:%s", chain, walletAddress)
-
-			jsonTx, err := json.Marshal(dbTx)
-			if err == nil {
-				if err := rdb.LPush(ctx, cacheKey, jsonTx).Err(); err != nil {
-					log.Printf("Redis LPush failed (non-fatal): %v", err)
-				} else {
-					// Trim to last 100
-					rdb.LTrim(ctx, cacheKey, 0, 100)
-				}
-			}
+	// Only format if we have a valid hex/int string
+	if tx.Value != "" && tx.Value != "0" {
+		valBig, _ := new(big.Int).SetString(cleanHex(tx.Value), 0)
+		if valBig != nil {
+			amountStr = formatTokenAmount(valBig, decimals)
 		}
 	}
 
-	log.Printf("Processed tx %s for chain %s", tx.TxHash, chain)
+	// 2. Parse Cost (String -> Float)
+	var costFloat float64 = 0
+	if tx.CostInTrx != "" {
+		if s, err := strconv.ParseFloat(tx.CostInTrx, 64); err == nil {
+			costFloat = s
+		}
+	}
+
+	for _, walletAddr := range wallets {
+		if walletAddr == "" {
+			continue
+		}
+
+		direction := "receive"
+		if strings.EqualFold(walletAddr, tx.From) {
+			direction = "send"
+		}
+
+		dbTx := WalletTransactionHistory{
+			WalletAddress:   walletAddr,
+			TxHash:          tx.TxHash,
+			Chain:           "tron",
+			BlockNumber:     int64(tx.BlockNumber),
+			BlockTime:       tx.BlockTime,
+			FromAddress:     tx.From,
+			ToAddress:       tx.To,
+			Amount:          amountStr,
+			Status:          "success",
+			TransactionType: "transfer",
+			Standard:        tx.Standard,
+			ContractAddress: tx.Contract,
+			TokenName:       tx.TokenName,
+			TokenSymbol:     tx.TokenSymbol,
+			TokenDecimal:    uint8(decimals),
+			Direction:       direction,
+			CreatedAt:       time.Now(),
+
+			// MAPPING JSON FIELDS TO DB COLUMNS
+			BandwidthUsed: tx.NetUsage,   // json:"net_usage"
+			EnergyUsed:    tx.EnergyUsed, // json:"energy_used"
+			CostInTrx:     costFloat,     // json:"cost_in_trx"
+			CostInUsd:     0,
+		}
+
+		// INSERT IGNORE
+		err := db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+			DoNothing: true,
+		}).Create(&dbTx).Error
+
+		if err != nil {
+			log.Printf("[TRON] DB Error for %s: %v", walletAddr, err)
+		} else {
+			log.Printf("[TRON] Saved Tx for %s | Bandwidth: %d | Energy: %d | Cost: %f", walletAddr, tx.NetUsage, tx.EnergyUsed, costFloat)
+			updateRedis(walletAddr, "tron", dbTx)
+		}
+	}
+}
+
+// ---------------------------------------------------------
+// 6. EVM PROCESSOR
+// ---------------------------------------------------------
+func processEvmTransaction(tx Transfer) {
+	wallets := []string{tx.From, tx.To}
+	log.Printf("[EVM] Processing Tx: %s", tx.TxHash)
+
+	// Calc Fees
+	gasUsed, _ := new(big.Int).SetString(cleanHex(tx.GasUsed), 0)
+	gasPrice, _ := new(big.Int).SetString(cleanHex(tx.EffectiveGasPrice), 0)
+	if gasUsed == nil {
+		gasUsed = big.NewInt(0)
+	}
+	if gasPrice == nil {
+		gasPrice = big.NewInt(0)
+	}
+	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
+
+	// Format Amount
+	amountStr := tx.Value
+	decimals := 18
+	if tx.TokenDecimals > 0 {
+		decimals = tx.TokenDecimals
+	}
+
+	if tx.Value != "" && tx.Value != "0" {
+		valBig, _ := new(big.Int).SetString(cleanHex(tx.Value), 0)
+		if valBig != nil {
+			amountStr = formatTokenAmount(valBig, decimals)
+		}
+	}
+
+	for _, walletAddr := range wallets {
+		if walletAddr == "" {
+			continue
+		}
+		direction := "receive"
+		if strings.EqualFold(walletAddr, tx.From) {
+			direction = "send"
+		}
+
+		dbTx := EvmTransactionHistory{
+			WalletAddress:   strings.ToLower(walletAddr),
+			TxHash:          tx.TxHash,
+			Chain:           "ETH",
+			BlockNumber:     int64(tx.BlockNumber),
+			BlockTime:       tx.BlockTime,
+			FromAddress:     strings.ToLower(tx.From),
+			ToAddress:       strings.ToLower(tx.To),
+			Amount:          amountStr,
+			GasUsed:         gasUsed.Int64(),
+			GasPrice:        gasPrice.String(),
+			NetworkFee:      feeWei.String(),
+			Status:          "success",
+			TransactionType: "transfer",
+			Standard:        tx.Standard,
+			ContractAddress: strings.ToLower(tx.Contract),
+			TokenName:       tx.TokenName,
+			TokenSymbol:     tx.TokenSymbol,
+			TokenDecimal:    uint8(decimals),
+			Direction:       direction,
+			CreatedAt:       time.Now(),
+		}
+
+		err := db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+			DoNothing: true,
+		}).Create(&dbTx).Error
+
+		if err != nil {
+			log.Printf("[EVM] DB Error for %s: %v", walletAddr, err)
+		} else {
+			log.Printf("[EVM] Saved Tx for %s", walletAddr)
+			updateRedis(strings.ToLower(walletAddr), "eth", dbTx)
+		}
+	}
+}
+
+// ---------------------------------------------------------
+// 7. HELPERS
+// ---------------------------------------------------------
+
+func updateRedis(wallet, chain string, data interface{}) {
+	if rdb == nil {
+		return
+	}
+	cacheKey := fmt.Sprintf("%s:%s:txns", chain, wallet)
+
+	jsonBytes, err := json.Marshal(data)
+	if err == nil {
+		rdb.LPush(ctx, cacheKey, jsonBytes)
+		rdb.LTrim(ctx, cacheKey, 0, 199)
+	}
+}
+
+func cleanHex(h string) string {
+	if strings.HasPrefix(h, "0x") {
+		return h
+	}
+	return "0x" + h
+}
+
+func formatTokenAmount(value *big.Int, decimals int) string {
+	fValue := new(big.Float).SetInt(value)
+	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+	res := new(big.Float).Quo(fValue, divisor)
+	s := res.Text('f', decimals)
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimRight(s, ".")
+	}
+	return s
 }
