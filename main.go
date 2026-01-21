@@ -315,9 +315,11 @@ func processTronTransaction(tx Transfer) {
 
 		// 1. Convert Hex to Base58 (T-Address) ONLY for the check
 		walletBase58 := HexToTronAddress(walletHex)
+		log.Printf("[TRON] Processing Tx: %s (Base58: %s)", tx.TxHash, walletBase58)
 
 		// 2. Check Redis using the Base58 address
 		if !isWalletWatched(walletBase58) {
+			log.Printf("[TRON] Wallet %s not found in Redis. Skipping.", walletBase58)
 			continue // Not our user
 		}
 
