@@ -251,6 +251,8 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("Received Payload: %s", string(bodyBytes))
+
 	log.Printf("Received Batch. Network: %s | Count: %d", payload.Metadata.Network, len(payload.Transfers))
 
 	// Basic network detection
@@ -483,7 +485,9 @@ func updateRedis(wallet, chain string, data interface{}) {
 }
 
 func HexToTronAddress(hexStr string) string {
-	hexStr = strings.TrimPrefix("0x", hexStr)
+	if strings.HasPrefix(hexStr, "0x") || strings.HasPrefix(hexStr, "0X") {
+		hexStr = hexStr[2:]
+	}
 
 	if len(hexStr) == 0 {
 		return ""
