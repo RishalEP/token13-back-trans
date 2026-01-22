@@ -123,7 +123,7 @@ type Transfer struct {
 
 	// Token Info
 	TokenName     string `json:"tokenName,omitempty"`
-	TokenSymbol   string `json:"tokenSymbol,omitempty"`
+	TokenSymbol   string `json:"token_symbol,omitempty"`
 	TokenDecimals int    `json:"decimals,omitempty"`
 }
 
@@ -327,6 +327,10 @@ func processTronTransaction(tx Transfer) {
 		direction := "receive"
 		if strings.EqualFold(walletHex, tx.From) {
 			direction = "send"
+		}
+
+		if tx.Contract != "" {
+			direction = "contract"
 		}
 
 		dbTx := WalletTransactionHistory{
