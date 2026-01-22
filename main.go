@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -314,7 +315,7 @@ func processTronTransaction(tx Transfer) {
 		}
 
 		// 1. Convert Hex to Base58 (T-Address) ONLY for the check
-		walletBase58 := HexToTronAddress(walletHex)
+		walletBase58, _ := HexToTronAddress(walletHex)
 		log.Printf("[TRON] Processing Tx: %s (Base58: %s)", tx.TxHash, walletBase58)
 
 		// 2. Check Redis using the Base58 address
@@ -485,25 +486,25 @@ func updateRedis(wallet, chain string, data interface{}) {
 		rdb.LTrim(ctx, cacheKey, 0, 199)
 	}
 }
+func sha256d(data []byte) []byte {
+	first := sha256.Sum256(data)
+	second := sha256.Sum256(first[:])
+	return second[:]
+}
 
-func HexToTronAddress(hexStr string) string {
-	if strings.HasPrefix(hexStr, "0x") || strings.HasPrefix(hexStr, "0X") {
-		hexStr = hexStr[2:]
-	}
-
-	if len(hexStr) == 0 {
-		return ""
-	}
-	if len(hexStr) == 40 {
-		hexStr = "40" + hexStr
-	}
-
-	inputBytes, err := hex.DecodeString(hexStr)
+func HexToTronAddress(hexAddr string) (string, error) {
+	hexAddr = strings.TrimPrefix(hexAddr, "0x")
+	addrBytes, err := hex.DecodeString(hexAddr)
 	if err != nil {
-		log.Printf("Error decoding hex string: %v", err)
-		return ""
+		return "", err
 	}
-	return base58.CheckEncode(inputBytes[1:], inputBytes[0])
+	if len(addrBytes) != 20 {
+		return "", fmt.Errorf("invalid address length: got %d bytes", len(addrBytes))
+	}
+	prefixed := append([]byte{0x41}, addrBytes...)
+	checksum := sha256d(prefixed)[:4]
+	final := append(prefixed, checksum...)
+	return base58.Encode(final), nil
 }
 
 func cleanHex(h string) string {
