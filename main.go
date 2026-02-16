@@ -61,28 +61,34 @@ type WalletTransactionHistory struct {
 
 // EVM Schema
 type EvmTransactionHistory struct {
-	ID              int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	WalletAddress   string    `gorm:"column:address;size:191;uniqueIndex:idx_evm_tx_to;index:idx_address;index:idx_address_chain,priority:1"`
-	TxHash          string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_evm_tx_to;index:idx_tx_hash"`
-	Chain           string    `gorm:"column:chain;size:20;primaryKey;index:idx_chain"`
-	BlockNumber     int64     `gorm:"column:block_number"`
-	BlockTime       int64     `gorm:"column:block_time;index:idx_block_time"`
-	FromAddress     string    `gorm:"column:from_address;size:191;index:idx_from_address"`
-	ToAddress       string    `gorm:"column:to_address;size:191;index:idx_to_address"`
-	Amount          string    `gorm:"column:token_amount"`
-	GasUsed         int64     `gorm:"column:gas_used"`
-	GasPrice        string    `gorm:"column:gas_price"`
-	NetworkFee      string    `gorm:"column:network_fee"`
-	Status          string    `gorm:"column:status;type:varchar(20);default:'success'"`
-	TransactionType string    `gorm:"column:transaction_type;type:varchar(50);default:'transfer'"`
-	MethodId        string    `gorm:"column:method_id;size:100"`
-	Standard        string    `gorm:"column:standard;index:idx_standard"`
-	ContractAddress string    `gorm:"column:contract_address;index:idx_contract_address"`
-	TokenName       string    `gorm:"column:token_name"`
-	TokenSymbol     string    `gorm:"column:token_symbol"`
-	TokenDecimal    uint8     `gorm:"column:token_decimal"`
-	Direction       string    `gorm:"column:direction;size:10"`
-	CreatedAt       time.Time `gorm:"column:created_at"`
+	ID               int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	WalletAddress    string    `gorm:"column:address;size:191;uniqueIndex:idx_evm_tx_to;index:idx_address;index:idx_address_chain,priority:1"`
+	TxHash           string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_evm_tx_to;index:idx_tx_hash"`
+	Chain            string    `gorm:"column:chain;size:20;primaryKey;index:idx_chain"`
+	BlockNumber      int64     `gorm:"column:block_number"`
+	BlockTime        int64     `gorm:"column:block_time;index:idx_block_time"`
+	FromAddress      string    `gorm:"column:from_address;size:191;index:idx_from_address"`
+	ToAddress        string    `gorm:"column:to_address;size:191;index:idx_to_address"`
+	Amount           string    `gorm:"column:token_amount"`
+	GasUsed          int64     `gorm:"column:gas_used"`
+	GasPrice         string    `gorm:"column:gas_price"`
+	NetworkFee       string    `gorm:"column:network_fee"`
+	Status           string    `gorm:"column:status;type:varchar(20);default:'success'"`
+	TransactionType  string    `gorm:"column:transaction_type;type:varchar(50);default:'transfer'"`
+	MethodId         string    `gorm:"column:method_id;size:100"`
+	Standard         string    `gorm:"column:standard;index:idx_standard"`
+	ContractAddress  string    `gorm:"column:contract_address;index:idx_contract_address"`
+	TokenName        string    `gorm:"column:token_name"`
+	TokenSymbol      string    `gorm:"column:token_symbol"`
+	TokenDecimal     uint8     `gorm:"column:token_decimal"`
+	Direction        string    `gorm:"column:direction;size:10"`
+	CreatedAt        time.Time `gorm:"column:created_at"`
+	FiatValue        float64   `gorm:"column:fiat_value;type:decimal(20,8);default:0"`
+	GasLimit         int64     `gorm:"column:gas_limit"`
+	NetworkFeeUsd    float64   `gorm:"column:network_fee_usd;type:decimal(20,8);default:0"`
+	ChainId          int64     `gorm:"column:chain_id;index:idx_chain_id"`
+	ChainName        string    `gorm:"column:chain_name;size:50;index:idx_chain_name"`
+	NetworkFeeNative string    `gorm:"column:network_fee_native"`
 }
 
 // BTC Schema
@@ -101,6 +107,38 @@ type BtcTransactionHistory struct {
 	TransactionType string    `gorm:"column:transaction_type;type:varchar(50);default:'transfer'"`
 	Direction       string    `gorm:"column:direction;size:10"`
 	CreatedAt       time.Time `gorm:"column:created_at"`
+	NetworkFeeSats  int64     `gorm:"column:network_fee_sats"`
+	Standard        string    `gorm:"column:standard;index:idx_standard"`
+	ContractAddress string    `gorm:"column:contract_address;index:idx_contract_address"`
+	TokenName       string    `gorm:"column:token_name"`
+	TokenSymbol     string    `gorm:"column:token_symbol"`
+	TokenDecimal    uint8     `gorm:"column:token_decimal"`
+}
+
+// SOL Schema
+type SolTransactionHistory struct {
+	ID                 int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	WalletAddress      string    `gorm:"column:address;size:191;uniqueIndex:idx_sol_tx;index:idx_address;index:idx_address_chain,priority:1"`
+	Signature          string    `gorm:"column:signature;size:128;uniqueIndex:idx_sol_tx;index:idx_signature"`
+	Chain              string    `gorm:"column:chain;size:20;index:idx_chain"`
+	BlockNumber        int64     `gorm:"column:block_number"`
+	BlockTime          int64     `gorm:"column:block_time;index:idx_block_time"`
+	FromAddress        string    `gorm:"column:from_address;size:191;index:idx_from_address"`
+	ToAddress          string    `gorm:"column:to_address;size:191;index:idx_to_address"`
+	Amount             string    `gorm:"column:token_amount"`
+	NetworkFee         string    `gorm:"column:network_fee"`
+	NetworkFeeLamports int64     `gorm:"column:network_fee_lamports"`
+	Direction          string    `gorm:"column:direction;size:10"`
+	Status             string    `gorm:"column:status;type:varchar(20);default:'success'"`
+	TransactionType    string    `gorm:"column:transaction_type;type:varchar(50);default:'transfer'"`
+	Source             string    `gorm:"column:source;size:100"`
+	Description        string    `gorm:"column:description;type:text"`
+	Standard           string    `gorm:"column:standard;size:191;index:idx_standard"`
+	ContractAddress    string    `gorm:"column:contract_address;size:191;index:idx_contract_address"`
+	TokenName          string    `gorm:"column:token_name"`
+	TokenSymbol        string    `gorm:"column:token_symbol"`
+	TokenDecimal       uint8     `gorm:"column:token_decimal"`
+	CreatedAt          time.Time `gorm:"column:created_at"`
 }
 
 // UserBalance maps to the `user_balances` table.
@@ -116,14 +154,15 @@ type UserBalance struct {
 
 // WalletAddress maps to the `wallet_addresses` table for wallet_id lookup.
 type WalletAddress struct {
-	WalletID string `gorm:"column:wallet_id"`
-	Address  string `gorm:"column:address"`
-	ChainID  string `gorm:"column:chain_id"`
+	WalletID string `gorm:"column:wallet_id;size:191"`
+	Address  string `gorm:"column:address;size:191;index:idx_wallet_addr"`
+	ChainID  string `gorm:"column:chain_id;size:100;index:idx_wallet_addr"`
 }
 
 func (t *WalletTransactionHistory) TableName() string { return "tron_transaction_histories" }
 func (t *EvmTransactionHistory) TableName() string    { return "evm_transaction_histories" }
 func (t *BtcTransactionHistory) TableName() string    { return "btc_transaction_histories" }
+func (t *SolTransactionHistory) TableName() string    { return "sol_transaction_histories" }
 func (u *UserBalance) TableName() string              { return "user_balances" }
 func (w *WalletAddress) TableName() string            { return "wallet_addresses" }
 
@@ -210,6 +249,64 @@ type QuickNodeBtcPayload struct {
 	Data []BtcBlock `json:"data"`
 }
 
+// QuickNode Solana payload
+type QuickNodeSolanaPayload struct {
+	Matches   []SolMatch `json:"matches"`
+	BlockTime int64      `json:"blockTime"`
+	Slot      int64      `json:"slot"`
+}
+
+type SolMatch struct {
+	Meta        SolMeta        `json:"meta"`
+	Transaction SolTransaction `json:"transaction"`
+}
+
+type SolMeta struct {
+	Err interface{} `json:"err"`
+	Fee int64       `json:"fee"`
+}
+
+type SolTransaction struct {
+	Message    SolMessage `json:"message"`
+	Signatures []string   `json:"signatures"`
+}
+
+type SolMessage struct {
+	AccountKeys  []SolAccountKey  `json:"accountKeys"`
+	Instructions []SolInstruction `json:"instructions"`
+}
+
+type SolAccountKey struct {
+	Pubkey string `json:"pubkey"`
+	Signer bool   `json:"signer"`
+}
+
+type SolInstruction struct {
+	ProgramId string     `json:"programId"`
+	Program   string     `json:"program,omitempty"`
+	Parsed    *SolParsed `json:"parsed,omitempty"`
+}
+
+type SolParsed struct {
+	Info SolParsedInfo `json:"info"`
+	Type string        `json:"type"`
+}
+
+type SolParsedInfo struct {
+	Destination string          `json:"destination"`
+	Source      string          `json:"source"`
+	Lamports    interface{}     `json:"lamports"` // Can be string or number
+	Amount      interface{}     `json:"amount"`   // For SPL tokens
+	TokenAmount *SolTokenAmount `json:"tokenAmount"`
+	Authority   string          `json:"authority"`
+}
+
+type SolTokenAmount struct {
+	Amount         string `json:"amount"`
+	Decimals       uint8  `json:"decimals"`
+	UiAmountString string `json:"uiAmountString"`
+}
+
 type BtcBlock struct {
 	Height int64   `json:"height"`
 	Time   int64   `json:"time"`
@@ -280,8 +377,8 @@ func initDatabase() {
 		log.Fatalf("Failed to connect to db: %v", err)
 	}
 
-	// AutoMigrate both tables to ensure they exist (wont change schema if already exists)
-	if err := db.AutoMigrate(&WalletTransactionHistory{}, &EvmTransactionHistory{}, &BtcTransactionHistory{}, &UserBalance{}); err != nil {
+	// AutoMigrate tables to ensure they exist
+	if err := db.AutoMigrate(&WalletTransactionHistory{}, &EvmTransactionHistory{}, &BtcTransactionHistory{}, &SolTransactionHistory{}, &UserBalance{}, &WalletAddress{}); err != nil {
 		log.Fatalf("AutoMigrate failed: %v", err)
 	}
 	log.Println("Connected to DB and Tables Checked")
@@ -366,6 +463,14 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		handleBtcPayload(payload)
+	case envelope["matches"] != nil:
+		var payload QuickNodeSolanaPayload
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			log.Printf("Solana decode error: %v", err)
+			http.Error(w, "Invalid Solana JSON", http.StatusBadRequest)
+			return
+		}
+		handleSolanaPayload(payload)
 	default:
 		log.Printf("Unsupported payload shape")
 		http.Error(w, "Unsupported payload", http.StatusBadRequest)
@@ -455,6 +560,143 @@ func handleBtcPayload(payload QuickNodeBtcPayload) {
 	}
 }
 
+func handleSolanaPayload(payload QuickNodeSolanaPayload) {
+	log.Printf("Received Solana Batch. Slot: %d | Matches: %d", payload.Slot, len(payload.Matches))
+	for _, match := range payload.Matches {
+		processSolanaTransaction(match, payload.Slot, payload.BlockTime)
+	}
+}
+
+func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
+	signature := ""
+	if len(match.Transaction.Signatures) > 0 {
+		signature = match.Transaction.Signatures[0]
+	}
+	if signature == "" {
+		return
+	}
+
+	log.Printf("[SOLANA] Processing Tx: %s", signature)
+
+	for _, inst := range match.Transaction.Message.Instructions {
+		// Only process transfers for now
+		if inst.Parsed == nil {
+			continue
+		}
+
+		if inst.Parsed.Type == "transfer" || inst.Parsed.Type == "transferChecked" {
+			info := inst.Parsed.Info
+			from := info.Source
+			to := info.Destination
+
+			if from == "" || to == "" {
+				continue
+			}
+
+			amountStr := "0"
+			decimals := 9 // Default for SOL
+
+			if info.Lamports != nil {
+				// Native SOL transfer
+				var lamports int64
+				switch v := info.Lamports.(type) {
+				case float64:
+					lamports = int64(v)
+				case string:
+					lamports, _ = strconv.ParseInt(v, 10, 64)
+				case json.Number:
+					lamports, _ = v.Int64()
+				}
+				if lamports > 0 {
+					amountStr = formatTokenAmount(big.NewInt(lamports), 9)
+				}
+			} else if info.TokenAmount != nil {
+				// SPL Token transferChecked
+				amountStr = info.TokenAmount.UiAmountString
+				decimals = int(info.TokenAmount.Decimals)
+			} else if info.Amount != nil {
+				// SPL Token transfer
+				var amount int64
+				switch v := info.Amount.(type) {
+				case float64:
+					amount = int64(v)
+				case string:
+					amount, _ = strconv.ParseInt(v, 10, 64)
+				case json.Number:
+					amount, _ = v.Int64()
+				}
+				amountStr = strconv.FormatInt(amount, 10)
+				decimals = 0
+			}
+
+			if amountStr == "" || amountStr == "0" {
+				continue
+			}
+
+			wallets := []string{from, to}
+			insertedAny := false
+
+			for _, walletAddr := range wallets {
+				if walletAddr == "" {
+					continue
+				}
+
+				direction := "receive"
+				if strings.EqualFold(walletAddr, from) {
+					direction = "send"
+				}
+
+				dbTx := SolTransactionHistory{
+					WalletAddress:      walletAddr,
+					Signature:          signature,
+					Chain:              "solana",
+					BlockNumber:        slot,
+					BlockTime:          blockTime,
+					FromAddress:        from,
+					ToAddress:          to,
+					Amount:             amountStr,
+					NetworkFee:         formatTokenAmount(big.NewInt(match.Meta.Fee), 9),
+					NetworkFeeLamports: match.Meta.Fee,
+					Status:             "success",
+					TransactionType:    "transfer",
+					Direction:          direction,
+					CreatedAt:          time.Now(),
+					Standard:           inst.Program,
+					ContractAddress:    inst.ProgramId,
+					TokenDecimal:       uint8(decimals),
+				}
+
+				if match.Meta.Err != nil {
+					dbTx.Status = "failed"
+				}
+
+				result := db.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "address"}, {Name: "signature"}},
+					DoNothing: true,
+				}).Create(&dbTx)
+
+				if result.Error != nil {
+					log.Printf("[SOLANA] DB Error for %s: %v", walletAddr, result.Error)
+				} else {
+					log.Printf("[SOLANA] Saved Tx for %s", walletAddr)
+					updateRedis(walletAddr, "solana", dbTx)
+					if result.RowsAffected > 0 {
+						insertedAny = true
+					}
+				}
+			}
+
+			if insertedAny {
+				tokenAddr := inst.ProgramId
+				if inst.Program == "system" {
+					tokenAddr = nativeTokenAddress("solana")
+				}
+				updateUserBalancesForTransfer("solana", from, to, tokenAddr, amountStr)
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------
 // 6. TRON PROCESSOR
 // ---------------------------------------------------------
@@ -527,7 +769,7 @@ func processTronTransaction(tx Transfer) {
 		}
 
 		result := db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}, {Name: "to_address"}},
 			DoNothing: true,
 		}).Create(&dbTx)
 
@@ -701,6 +943,22 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 			Standard:        "native",
 			Direction:       direction,
 			CreatedAt:       time.Now(),
+			ChainId:         parseInt64(chainInfo.Chain), // fallback
+			GasLimit:        parseInt64(tx.Gas),
+		}
+		// If we had more info from chainInfo
+		if chainInfo.Chain == "ETH" {
+			dbTx.ChainId = 1
+			dbTx.ChainName = "Ethereum"
+		} else if chainInfo.Chain == "POL" {
+			dbTx.ChainId = 137
+			dbTx.ChainName = "Polygon"
+		} else if chainInfo.Chain == "BASE" {
+			dbTx.ChainId = 8453
+			dbTx.ChainName = "Base"
+		} else if chainInfo.Chain == "BSC" {
+			dbTx.ChainId = 56
+			dbTx.ChainName = "BSC"
 		}
 
 		result := db.Clauses(clause.OnConflict{
@@ -800,6 +1058,20 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 			TokenDecimal:    uint8(decimals),
 			Direction:       direction,
 			CreatedAt:       time.Now(),
+			GasLimit:        parseInt64(txRef.Gas),
+		}
+		if chainInfo.Chain == "ETH" {
+			dbTx.ChainId = 1
+			dbTx.ChainName = "Ethereum"
+		} else if chainInfo.Chain == "POL" {
+			dbTx.ChainId = 137
+			dbTx.ChainName = "Polygon"
+		} else if chainInfo.Chain == "BASE" {
+			dbTx.ChainId = 8453
+			dbTx.ChainName = "Base"
+		} else if chainInfo.Chain == "BSC" {
+			dbTx.ChainId = 56
+			dbTx.ChainName = "BSC"
 		}
 
 		result := db.Clauses(clause.OnConflict{
@@ -928,6 +1200,8 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 			TransactionType: "transfer",
 			Direction:       direction,
 			CreatedAt:       time.Now(),
+			NetworkFeeSats:  feeInt.Int64(),
+			Standard:        "native",
 		}
 
 		result := db.Clauses(clause.OnConflict{
