@@ -154,9 +154,17 @@ type UserBalance struct {
 
 // WalletAddress maps to the `wallet_addresses` table for wallet_id lookup.
 type WalletAddress struct {
-	WalletID string `gorm:"column:wallet_id;size:191"`
-	Address  string `gorm:"column:address;size:191;index:idx_wallet_addr"`
-	ChainID  string `gorm:"column:chain_id;size:100;index:idx_wallet_addr"`
+	ID             int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	WalletID       string    `gorm:"column:wallet_id;type:char(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index"`
+	ChainID        string    `gorm:"column:chain_id;type:varchar(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index;uniqueIndex:uq_chain_address"`
+	IndexN         int64     `gorm:"column:index_n;not null;uniqueIndex:uq_wallet_chain_index"`
+	Address        string    `gorm:"column:address;type:varchar(128);not null;uniqueIndex:uq_chain_address"`
+	DerivationPath string    `gorm:"column:derivation_path;type:varchar(255)"`
+	AddressHex     string    `gorm:"column:address_hex;type:varchar(255)"`
+	CreatedAt      time.Time `gorm:"column:created_at"`
+	UpdatedAt      time.Time `gorm:"column:updated_at"`
+	Label          string    `gorm:"column:label;type:varchar(255);not null"`
+	Active         bool      `gorm:"column:active;type:tinyint(1);not null;default:1"`
 }
 
 func (t *WalletTransactionHistory) TableName() string { return "tron_transaction_histories" }
