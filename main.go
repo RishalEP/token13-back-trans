@@ -649,47 +649,54 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 					continue
 				}
 
-				direction := "receive"
-				if strings.EqualFold(walletAddr, from) {
-					direction = "send"
+				waList, _ := resolveWalletAddresses("solana", walletAddr)
+				if len(waList) == 0 {
+					continue
 				}
 
-				dbTx := SolTransactionHistory{
-					WalletAddress:      walletAddr,
-					Signature:          signature,
-					Chain:              "solana",
-					BlockNumber:        slot,
-					BlockTime:          blockTime,
-					FromAddress:        from,
-					ToAddress:          to,
-					Amount:             amountStr,
-					NetworkFee:         formatTokenAmount(big.NewInt(match.Meta.Fee), 9),
-					NetworkFeeLamports: match.Meta.Fee,
-					Status:             "success",
-					TransactionType:    "transfer",
-					Direction:          direction,
-					CreatedAt:          time.Now(),
-					Standard:           inst.Program,
-					ContractAddress:    inst.ProgramId,
-					TokenDecimal:       uint8(decimals),
-				}
+				for _, wa := range waList {
+					direction := "receive"
+					if strings.EqualFold(walletAddr, from) {
+						direction = "send"
+					}
 
-				if match.Meta.Err != nil {
-					dbTx.Status = "failed"
-				}
+					dbTx := SolTransactionHistory{
+						WalletAddress:      wa.Address,
+						Signature:          signature,
+						Chain:              "solana",
+						BlockNumber:        slot,
+						BlockTime:          blockTime,
+						FromAddress:        from,
+						ToAddress:          to,
+						Amount:             amountStr,
+						NetworkFee:         formatTokenAmount(big.NewInt(match.Meta.Fee), 9),
+						NetworkFeeLamports: match.Meta.Fee,
+						Status:             "success",
+						TransactionType:    "transfer",
+						Direction:          direction,
+						CreatedAt:          time.Now(),
+						Standard:           inst.Program,
+						ContractAddress:    inst.ProgramId,
+						TokenDecimal:       uint8(decimals),
+					}
 
-				result := db.Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "address"}, {Name: "signature"}},
-					DoNothing: true,
-				}).Create(&dbTx)
+					if match.Meta.Err != nil {
+						dbTx.Status = "failed"
+					}
 
-				if result.Error != nil {
-					log.Printf("[SOLANA] DB Error for %s: %v", walletAddr, result.Error)
-				} else {
-					log.Printf("[SOLANA] Saved Tx for %s", walletAddr)
-					updateRedis(walletAddr, "solana", dbTx)
-					if result.RowsAffected > 0 {
-						insertedAny = true
+					result := db.Clauses(clause.OnConflict{
+						Columns:   []clause.Column{{Name: "address"}, {Name: "signature"}},
+						DoNothing: true,
+					}).Create(&dbTx)
+
+					if result.Error != nil {
+						log.Printf("[SOLANA] DB Error for %s: %v", wa.Address, result.Error)
+					} else {
+						log.Printf("[SOLANA] Saved Tx for %s", wa.Address)
+						updateRedis(wa.Address, "solana", dbTx)
+						if result.RowsAffected > 0 {
+							insertedAny = true
+						}
 					}
 				}
 			}
@@ -739,55 +746,58 @@ func processTronTransaction(tx Transfer) {
 			continue
 		}
 
-		// 1. Convert Hex to Base58 (T-Address) ONLY for the check
-		walletBase58, _ := HexToTronAddress(walletHex)
-		log.Printf("[TRON] Processing Tx: %s (Base58: %s)", tx.TxHash, walletBase58)
-
-		direction := "receive"
-		if strings.EqualFold(walletHex, tx.From) {
-			direction = "send"
+		waList, _ := resolveWalletAddresses("tron", walletHex)
+		if len(waList) == 0 {
+			continue
 		}
 
-		if tx.Contract != "" {
-			direction = "contract"
-		}
+		for _, wa := range waList {
+			direction := "receive"
+			if strings.EqualFold(walletHex, tx.From) {
+				direction = "send"
+			}
 
-		dbTx := WalletTransactionHistory{
-			WalletAddress:   walletHex,
-			TxHash:          tx.TxHash,
-			Chain:           "tron",
-			BlockNumber:     int64(tx.BlockNumber),
-			BlockTime:       tx.BlockTime,
-			FromAddress:     tx.From,
-			ToAddress:       tx.To,
-			Amount:          amountStr,
-			Status:          "success",
-			TransactionType: "transfer",
-			Standard:        tx.Standard,
-			ContractAddress: tx.Contract,
-			TokenName:       tx.TokenName,
-			TokenSymbol:     tx.TokenSymbol,
-			TokenDecimal:    uint8(decimals),
-			Direction:       direction,
-			CreatedAt:       time.Now(),
-			BandwidthUsed:   tx.NetUsage,
-			EnergyUsed:      tx.EnergyUsed,
-			CostInTrx:       costFloat,
-			CostInUsd:       0,
-		}
+			if tx.Contract != "" {
+				direction = "contract"
+			}
 
-		result := db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}, {Name: "to_address"}},
-			DoNothing: true,
-		}).Create(&dbTx)
+			dbTx := WalletTransactionHistory{
+				WalletAddress:   wa.Address,
+				TxHash:          tx.TxHash,
+				Chain:           "tron",
+				BlockNumber:     int64(tx.BlockNumber),
+				BlockTime:       tx.BlockTime,
+				FromAddress:     tx.From,
+				ToAddress:       tx.To,
+				Amount:          amountStr,
+				Status:          "success",
+				TransactionType: "transfer",
+				Standard:        tx.Standard,
+				ContractAddress: tx.Contract,
+				TokenName:       tx.TokenName,
+				TokenSymbol:     tx.TokenSymbol,
+				TokenDecimal:    uint8(decimals),
+				Direction:       direction,
+				CreatedAt:       time.Now(),
+				BandwidthUsed:   tx.NetUsage,
+				EnergyUsed:      tx.EnergyUsed,
+				CostInTrx:       costFloat,
+				CostInUsd:       0,
+			}
 
-		if result.Error != nil {
-			log.Printf("[TRON] DB Error for %s: %v", walletHex, result.Error)
-		} else {
-			log.Printf("[TRON] Saved Tx for %s (Match Found via %s)", walletHex, walletBase58)
-			updateRedis(walletHex, "tron", dbTx)
-			if result.RowsAffected > 0 {
-				insertedAny = true
+			result := db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}, {Name: "to_address"}},
+				DoNothing: true,
+			}).Create(&dbTx)
+
+			if result.Error != nil {
+				log.Printf("[TRON] DB Error for %s: %v", wa.Address, result.Error)
+			} else {
+				log.Printf("[TRON] Saved Tx for %s", wa.Address)
+				updateRedis(wa.Address, "tron", dbTx)
+				if result.RowsAffected > 0 {
+					insertedAny = true
+				}
 			}
 		}
 	}
@@ -840,46 +850,54 @@ func processEvmTransaction(tx Transfer) {
 		if walletAddr == "" {
 			continue
 		}
-		direction := "receive"
-		if strings.EqualFold(walletAddr, tx.From) {
-			direction = "send"
+
+		waList, _ := resolveWalletAddresses("eth", walletAddr)
+		if len(waList) == 0 {
+			continue
 		}
 
-		dbTx := EvmTransactionHistory{
-			WalletAddress:   strings.ToLower(walletAddr),
-			TxHash:          tx.TxHash,
-			Chain:           "ETH",
-			BlockNumber:     int64(tx.BlockNumber),
-			BlockTime:       tx.BlockTime,
-			FromAddress:     strings.ToLower(tx.From),
-			ToAddress:       strings.ToLower(tx.To),
-			Amount:          amountStr,
-			GasUsed:         gasUsed.Int64(),
-			GasPrice:        gasPrice.String(),
-			NetworkFee:      feeWei.String(),
-			Status:          "success",
-			TransactionType: "transfer",
-			Standard:        tx.Standard,
-			ContractAddress: strings.ToLower(tx.Contract),
-			TokenName:       tx.TokenName,
-			TokenSymbol:     tx.TokenSymbol,
-			TokenDecimal:    uint8(decimals),
-			Direction:       direction,
-			CreatedAt:       time.Now(),
-		}
+		for _, wa := range waList {
+			direction := "receive"
+			if strings.EqualFold(walletAddr, tx.From) {
+				direction = "send"
+			}
 
-		result := db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
-			DoNothing: true,
-		}).Create(&dbTx)
+			dbTx := EvmTransactionHistory{
+				WalletAddress:   wa.Address,
+				TxHash:          tx.TxHash,
+				Chain:           "ETH",
+				BlockNumber:     int64(tx.BlockNumber),
+				BlockTime:       tx.BlockTime,
+				FromAddress:     strings.ToLower(tx.From),
+				ToAddress:       strings.ToLower(tx.To),
+				Amount:          amountStr,
+				GasUsed:         gasUsed.Int64(),
+				GasPrice:        gasPrice.String(),
+				NetworkFee:      feeWei.String(),
+				Status:          "success",
+				TransactionType: "transfer",
+				Standard:        tx.Standard,
+				ContractAddress: strings.ToLower(tx.Contract),
+				TokenName:       tx.TokenName,
+				TokenSymbol:     tx.TokenSymbol,
+				TokenDecimal:    uint8(decimals),
+				Direction:       direction,
+				CreatedAt:       time.Now(),
+			}
 
-		if result.Error != nil {
-			log.Printf("[EVM] DB Error for %s: %v", walletAddr, result.Error)
-		} else {
-			log.Printf("[EVM] Saved Tx for %s", walletAddr)
-			updateRedis(strings.ToLower(walletAddr), "eth", dbTx)
-			if result.RowsAffected > 0 {
-				insertedAny = true
+			result := db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+				DoNothing: true,
+			}).Create(&dbTx)
+
+			if result.Error != nil {
+				log.Printf("[EVM] DB Error for %s: %v", wa.Address, result.Error)
+			} else {
+				log.Printf("[EVM] Saved Tx for %s", wa.Address)
+				updateRedis(wa.Address, "eth", dbTx)
+				if result.RowsAffected > 0 {
+					insertedAny = true
+				}
 			}
 		}
 	}
@@ -917,70 +935,71 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
 
 	wallets := []string{tx.FromAddress, tx.ToAddress}
-	seen := make(map[string]bool, len(wallets))
 	insertedAny := false
 	for _, walletAddr := range wallets {
 		if walletAddr == "" {
 			continue
 		}
-		walletAddr = strings.ToLower(walletAddr)
-		if seen[walletAddr] {
+
+		waList, _ := resolveWalletAddresses(chainInfo.RedisKey, walletAddr)
+		if len(waList) == 0 {
 			continue
 		}
-		seen[walletAddr] = true
 
-		direction := "receive"
-		if strings.EqualFold(walletAddr, tx.FromAddress) {
-			direction = "send"
-		}
+		for _, wa := range waList {
+			direction := "receive"
+			if strings.EqualFold(walletAddr, tx.FromAddress) {
+				direction = "send"
+			}
 
-		dbTx := EvmTransactionHistory{
-			WalletAddress:   walletAddr,
-			TxHash:          tx.Hash,
-			Chain:           chainInfo.Chain,
-			BlockNumber:     blockNumber,
-			BlockTime:       blockTime,
-			FromAddress:     strings.ToLower(tx.FromAddress),
-			ToAddress:       strings.ToLower(tx.ToAddress),
-			Amount:          amountStr,
-			GasUsed:         gasUsed.Int64(),
-			GasPrice:        gasPrice.String(),
-			NetworkFee:      feeWei.String(),
-			Status:          "success",
-			TransactionType: "transfer",
-			Standard:        "native",
-			Direction:       direction,
-			CreatedAt:       time.Now(),
-			ChainId:         parseInt64(chainInfo.Chain), // fallback
-			GasLimit:        parseInt64(tx.Gas),
-		}
-		// If we had more info from chainInfo
-		if chainInfo.Chain == "ETH" {
-			dbTx.ChainId = 1
-			dbTx.ChainName = "Ethereum"
-		} else if chainInfo.Chain == "POL" {
-			dbTx.ChainId = 137
-			dbTx.ChainName = "Polygon"
-		} else if chainInfo.Chain == "BASE" {
-			dbTx.ChainId = 8453
-			dbTx.ChainName = "Base"
-		} else if chainInfo.Chain == "BSC" {
-			dbTx.ChainId = 56
-			dbTx.ChainName = "BSC"
-		}
+			dbTx := EvmTransactionHistory{
+				WalletAddress:   wa.Address,
+				TxHash:          tx.Hash,
+				Chain:           chainInfo.Chain,
+				BlockNumber:     blockNumber,
+				BlockTime:       blockTime,
+				FromAddress:     strings.ToLower(tx.FromAddress),
+				ToAddress:       strings.ToLower(tx.ToAddress),
+				Amount:          amountStr,
+				GasUsed:         gasUsed.Int64(),
+				GasPrice:        gasPrice.String(),
+				NetworkFee:      feeWei.String(),
+				Status:          "success",
+				TransactionType: "transfer",
+				Standard:        "native",
+				Direction:       direction,
+				CreatedAt:       time.Now(),
+				ChainId:         parseInt64(chainInfo.Chain), // fallback
+				GasLimit:        parseInt64(tx.Gas),
+			}
+			// If we had more info from chainInfo
+			if chainInfo.Chain == "ETH" {
+				dbTx.ChainId = 1
+				dbTx.ChainName = "Ethereum"
+			} else if chainInfo.Chain == "POL" {
+				dbTx.ChainId = 137
+				dbTx.ChainName = "Polygon"
+			} else if chainInfo.Chain == "BASE" {
+				dbTx.ChainId = 8453
+				dbTx.ChainName = "Base"
+			} else if chainInfo.Chain == "BSC" {
+				dbTx.ChainId = 56
+				dbTx.ChainName = "BSC"
+			}
 
-		result := db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
-			DoNothing: true,
-		}).Create(&dbTx)
+			result := db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+				DoNothing: true,
+			}).Create(&dbTx)
 
-		if result.Error != nil {
-			log.Printf("[MORALIS] DB Error for %s: %v", walletAddr, result.Error)
-		} else {
-			log.Printf("[MORALIS] Saved native tx for %s", walletAddr)
-			updateRedis(walletAddr, chainInfo.RedisKey, dbTx)
-			if result.RowsAffected > 0 {
-				insertedAny = true
+			if result.Error != nil {
+				log.Printf("[MORALIS] DB Error for %s: %v", wa.Address, result.Error)
+			} else {
+				log.Printf("[MORALIS] Saved native tx for %s", wa.Address)
+				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
+				if result.RowsAffected > 0 {
+					insertedAny = true
+				}
 			}
 		}
 	}
@@ -1028,72 +1047,73 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
 
 	wallets := []string{transfer.From, transfer.To}
-	seen := make(map[string]bool, len(wallets))
 	insertedAny := false
 	for _, walletAddr := range wallets {
 		if walletAddr == "" {
 			continue
 		}
-		walletAddr = strings.ToLower(walletAddr)
-		if seen[walletAddr] {
+
+		waList, _ := resolveWalletAddresses(chainInfo.RedisKey, walletAddr)
+		if len(waList) == 0 {
 			continue
 		}
-		seen[walletAddr] = true
 
-		direction := "receive"
-		if strings.EqualFold(walletAddr, transfer.From) {
-			direction = "send"
-		}
+		for _, wa := range waList {
+			direction := "receive"
+			if strings.EqualFold(walletAddr, transfer.From) {
+				direction = "send"
+			}
 
-		dbTx := EvmTransactionHistory{
-			WalletAddress:   walletAddr,
-			TxHash:          transfer.TransactionHash,
-			Chain:           chainInfo.Chain,
-			BlockNumber:     blockNumber,
-			BlockTime:       blockTime,
-			FromAddress:     strings.ToLower(transfer.From),
-			ToAddress:       strings.ToLower(transfer.To),
-			Amount:          amountStr,
-			GasUsed:         gasUsed.Int64(),
-			GasPrice:        gasPrice.String(),
-			NetworkFee:      feeWei.String(),
-			Status:          "success",
-			TransactionType: "transfer",
-			Standard:        "erc20",
-			ContractAddress: strings.ToLower(transfer.Contract),
-			TokenName:       transfer.TokenName,
-			TokenSymbol:     transfer.TokenSymbol,
-			TokenDecimal:    uint8(decimals),
-			Direction:       direction,
-			CreatedAt:       time.Now(),
-			GasLimit:        parseInt64(txRef.Gas),
-		}
-		if chainInfo.Chain == "ETH" {
-			dbTx.ChainId = 1
-			dbTx.ChainName = "Ethereum"
-		} else if chainInfo.Chain == "POL" {
-			dbTx.ChainId = 137
-			dbTx.ChainName = "Polygon"
-		} else if chainInfo.Chain == "BASE" {
-			dbTx.ChainId = 8453
-			dbTx.ChainName = "Base"
-		} else if chainInfo.Chain == "BSC" {
-			dbTx.ChainId = 56
-			dbTx.ChainName = "BSC"
-		}
+			dbTx := EvmTransactionHistory{
+				WalletAddress:   wa.Address,
+				TxHash:          transfer.TransactionHash,
+				Chain:           chainInfo.Chain,
+				BlockNumber:     blockNumber,
+				BlockTime:       blockTime,
+				FromAddress:     strings.ToLower(transfer.From),
+				ToAddress:       strings.ToLower(transfer.To),
+				Amount:          amountStr,
+				GasUsed:         gasUsed.Int64(),
+				GasPrice:        gasPrice.String(),
+				NetworkFee:      feeWei.String(),
+				Status:          "success",
+				TransactionType: "transfer",
+				Standard:        "erc20",
+				ContractAddress: strings.ToLower(transfer.Contract),
+				TokenName:       transfer.TokenName,
+				TokenSymbol:     transfer.TokenSymbol,
+				TokenDecimal:    uint8(decimals),
+				Direction:       direction,
+				CreatedAt:       time.Now(),
+				GasLimit:        parseInt64(txRef.Gas),
+			}
+			if chainInfo.Chain == "ETH" {
+				dbTx.ChainId = 1
+				dbTx.ChainName = "Ethereum"
+			} else if chainInfo.Chain == "POL" {
+				dbTx.ChainId = 137
+				dbTx.ChainName = "Polygon"
+			} else if chainInfo.Chain == "BASE" {
+				dbTx.ChainId = 8453
+				dbTx.ChainName = "Base"
+			} else if chainInfo.Chain == "BSC" {
+				dbTx.ChainId = 56
+				dbTx.ChainName = "BSC"
+			}
 
-		result := db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
-			DoNothing: true,
-		}).Create(&dbTx)
+			result := db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+				DoNothing: true,
+			}).Create(&dbTx)
 
-		if result.Error != nil {
-			log.Printf("[MORALIS] DB Error for %s: %v", walletAddr, result.Error)
-		} else {
-			log.Printf("[MORALIS] Saved ERC20 tx for %s", walletAddr)
-			updateRedis(walletAddr, chainInfo.RedisKey, dbTx)
-			if result.RowsAffected > 0 {
-				insertedAny = true
+			if result.Error != nil {
+				log.Printf("[MORALIS] DB Error for %s: %v", wa.Address, result.Error)
+			} else {
+				log.Printf("[MORALIS] Saved ERC20 tx for %s", wa.Address)
+				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
+				if result.RowsAffected > 0 {
+					insertedAny = true
+				}
 			}
 		}
 	}
@@ -1175,59 +1195,70 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 			continue
 		}
 
-		direction := "receive"
-		absAmount := new(big.Int).Set(netAmount)
-		if netAmount.Sign() < 0 {
-			direction = "send"
-			absAmount.Abs(netAmount)
-		}
-		amountStr := formatTokenAmount(absAmount, 8)
-		networkFee := "0"
-		fromAddr := ""
-		toAddr := ""
-		if direction == "send" {
-			networkFee = feeBtc
-			fromAddr = walletAddr
-			toAddr = firstOutputAddr
-		} else {
-			fromAddr = firstInputAddr
-			toAddr = walletAddr
+		waList, _ := resolveWalletAddresses("btc", walletAddr)
+		if len(waList) == 0 {
+			continue
 		}
 
-		dbTx := BtcTransactionHistory{
-			WalletAddress:   walletAddr,
-			TxHash:          tx.Txid,
-			Chain:           "BTC",
-			BlockNumber:     blockNumber,
-			BlockTime:       blockTime,
-			FromAddress:     fromAddr,
-			ToAddress:       toAddr,
-			Amount:          amountStr,
-			NetworkFee:      networkFee,
-			Status:          "success",
-			TransactionType: "transfer",
-			Direction:       direction,
-			CreatedAt:       time.Now(),
-			NetworkFeeSats:  feeInt.Int64(),
-			Standard:        "native",
-		}
+		for _, wa := range waList {
+			direction := "receive"
+			absAmount := new(big.Int).Set(netAmount)
+			if netAmount.Sign() < 0 {
+				direction = "send"
+				absAmount.Abs(netAmount)
+			}
+			amountStr := formatTokenAmount(absAmount, 8)
+			networkFee := "0"
+			fromAddr := ""
+			toAddr := ""
+			if direction == "send" {
+				networkFee = feeBtc
+				fromAddr = walletAddr
+				toAddr = firstOutputAddr
+			} else {
+				fromAddr = firstInputAddr
+				toAddr = walletAddr
+			}
 
-		result := db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
-			DoNothing: true,
-		}).Create(&dbTx)
+			dbTx := BtcTransactionHistory{
+				WalletAddress:   wa.Address,
+				TxHash:          tx.Txid,
+				Chain:           "BTC",
+				BlockNumber:     blockNumber,
+				BlockTime:       blockTime,
+				FromAddress:     fromAddr,
+				ToAddress:       toAddr,
+				Amount:          amountStr,
+				NetworkFee:      networkFee,
+				Status:          "success",
+				TransactionType: "transfer",
+				Direction:       direction,
+				CreatedAt:       time.Now(),
+				NetworkFeeSats:  feeInt.Int64(),
+				Standard:        "native",
+			}
 
-		if result.Error != nil {
-			log.Printf("[BTC] DB Error for %s: %v", walletAddr, result.Error)
-		} else {
-			log.Printf("[BTC] Saved tx for %s", walletAddr)
-			updateRedis(walletAddr, "btc", dbTx)
-			if result.RowsAffected > 0 {
-				delta := amountStr
-				if netAmount.Sign() < 0 {
-					delta = negateAmount(amountStr)
+			result := db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+				DoNothing: true,
+			}).Create(&dbTx)
+
+			if result.Error != nil {
+				log.Printf("[BTC] DB Error for %s: %v", wa.Address, result.Error)
+			} else {
+				log.Printf("[BTC] Saved tx for %s", wa.Address)
+				updateRedis(wa.Address, "btc", dbTx)
+				if result.RowsAffected > 0 {
+					delta := amountStr
+					if netAmount.Sign() < 0 {
+						delta = negateAmount(amountStr)
+					}
+					// Use wa directly to avoid re-resolving
+					effectiveToken := nativeTokenAddress(wa.ChainID)
+					if err := upsertUserBalance(wa.WalletID, wa.Address, wa.ChainID, effectiveToken, delta); err != nil {
+						log.Printf("[BALANCE] update failed for %s (%s): %v", wa.Address, wa.ChainID, err)
+					}
 				}
-				updateUserBalanceForAddress("btc", walletAddr, nativeTokenAddress("btc"), delta)
 			}
 		}
 	}
@@ -1356,28 +1387,28 @@ func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 	normalizedAddr := normalizeAddress(chainID, address)
 	addrCandidates := []string{normalizedAddr}
 
+	if isEvmChain(chainID) {
+		if strings.HasPrefix(normalizedAddr, "0x") {
+			addrCandidates = append(addrCandidates, strings.TrimPrefix(normalizedAddr, "0x"))
+		} else {
+			addrCandidates = append(addrCandidates, "0x"+normalizedAddr)
+		}
+	}
+
 	if strings.EqualFold(chainID, "tron") {
 		if base58Addr, err := HexToTronAddress(normalizedAddr); err == nil {
-			if base58Addr != "" && base58Addr != normalizedAddr {
+			if base58Addr != "" && !contains(addrCandidates, base58Addr) {
 				addrCandidates = append(addrCandidates, base58Addr)
 			}
 		}
 	}
 
-	chainCandidates := []string{}
-	seenChains := map[string]bool{}
-	for _, c := range []string{chainID, strings.ToLower(chainID), strings.ToUpper(chainID)} {
-		if c == "" || seenChains[c] {
-			continue
-		}
-		seenChains[c] = true
-		chainCandidates = append(chainCandidates, c)
-	}
+	chainCandidates := getChainSynonyms(chainID)
 
 	for _, chain := range chainCandidates {
 		for _, addr := range addrCandidates {
 			var rows []WalletAddress
-			if err := db.Where("chain_id = ? AND address = ?", chain, addr).Find(&rows).Error; err != nil {
+			if err := db.Where("chain_id = ? AND (address = ? OR address_hex = ?)", chain, addr, addr).Find(&rows).Error; err != nil {
 				return nil, err
 			}
 			if len(rows) > 0 {
@@ -1387,6 +1418,42 @@ func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 	}
 
 	return nil, nil
+}
+
+func getChainSynonyms(chainID string) []string {
+	c := strings.ToLower(chainID)
+	switch c {
+	case "eth", "ethereum", "1", "0x1", "ethereum-mainnet":
+		return []string{"ETH", "eth", "1", "0x1", "ethereum-mainnet", "ethereum"}
+	case "tron", "tron-mainnet", "trx":
+		return []string{"tron", "TRON", "tron-mainnet", "TRX"}
+	case "btc", "bitcoin", "bitcoin-mainnet":
+		return []string{"BTC", "btc", "bitcoin", "bitcoin-mainnet"}
+	case "sol", "solana", "solana-mainnet":
+		return []string{"solana", "SOL", "sol", "solana-mainnet"}
+	case "pol", "polygon", "137", "0x89", "polygon-mainnet":
+		return []string{"POL", "pol", "137", "0x89", "polygon-mainnet", "polygon"}
+	case "base", "8453", "0x2105", "base-mainnet":
+		return []string{"BASE", "base", "8453", "0x2105", "base-mainnet"}
+	case "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain":
+		return []string{"BSC", "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain"}
+	default:
+		return []string{chainID, strings.ToLower(chainID), strings.ToUpper(chainID)}
+	}
+}
+
+func isEvmChain(chainID string) bool {
+	c := strings.ToLower(chainID)
+	return c == "eth" || c == "pol" || c == "base" || c == "bsc" || c == "1" || c == "137" || c == "8453" || c == "56" || c == "ethereum" || c == "polygon"
+}
+
+func contains(slice []string, val string) bool {
+	for _, item := range slice {
+		if strings.EqualFold(item, val) {
+			return true
+		}
+	}
+	return false
 }
 
 func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) error {
