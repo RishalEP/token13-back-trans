@@ -332,14 +332,14 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	log.Printf("Received payload body: %s", string(bodyBytes))
+
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
 		log.Printf("JSON decode error: %v", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-
-	log.Printf("Received Payload: %s", string(bodyBytes))
 
 	switch {
 	case envelope["metadata"] != nil && envelope["transfers"] != nil:
