@@ -80,7 +80,7 @@ jobs:
       - name: Parse Back Trans Secrets (dev)
         run: |
           echo '${{ secrets.EKS_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
-          jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans-dev.env
+          jq -r 'to_entries|map("\(.key)=\(.value|@json)")|.[]' back-trans.json > back-trans-dev.env
           shred -u back-trans.json
 
       - name: Copy back-trans manifests to Bastion
