@@ -35,6 +35,10 @@ jobs:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_DEV }}
       REDIS_URL: ${{ secrets.REDIS_URL_DEV }}
+      APNS_ENV: ${{ secrets.APNS_ENV }}
+      APNS_KEY_ID: ${{ secrets.APNS_KEY_ID }}
+      APNS_TOPIC: ${{ secrets.APNS_TOPIC }}
+      APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID }}
 
     steps:
       - name: Checkout
@@ -88,7 +92,7 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' \
+            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' APNS_ENV='${APNS_ENV}' APNS_KEY_ID='${APNS_KEY_ID}' APNS_TOPIC='${APNS_TOPIC}' APNS_TEAM_ID='${APNS_TEAM_ID}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -101,6 +105,10 @@ jobs:
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
               --from-literal=DATABASE_URL="${DATABASE_URL}" \
               --from-literal=REDIS_URL="${REDIS_URL}" \
+              --from-literal=APNS_ENV="${APNS_ENV}" \
+              --from-literal=APNS_KEY_ID="${APNS_KEY_ID}" \
+              --from-literal=APNS_TOPIC="${APNS_TOPIC}" \
+              --from-literal=APNS_TEAM_ID="${APNS_TEAM_ID}" \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
 
             echo "--- Apply Deployment, Service ---"
