@@ -32,12 +32,27 @@ func InitNotificationService() {
 	service := &NotificationService{}
 
 	// 1. APNs Setup
+	p8Key := os.Getenv("APNS_P8_KEY")
 	p8File := os.Getenv("APNS_P8_FILE")
-	if p8File != "" {
-		// Modern .p8 Token-based Auth
+	if p8Key != "" {
+		// Modern .p8 Token-based Auth from env var string
+		authKey, err := token.AuthKeyFromBytes([]byte(p8Key))
+		if err != nil {
+			log.Printf("[Notification] Fatal: APNs .p8 key (string) error: %v", err)
+		} else {
+			tokenStruct := &token.Token{
+				AuthKey: authKey,
+				KeyID:   os.Getenv("APNS_KEY_ID"),
+				TeamID:  os.Getenv("APNS_TEAM_ID"),
+			}
+			client := apns2.NewTokenClient(tokenStruct)
+			setupAPNsEnvironment(service, client)
+		}
+	} else if p8File != "" {
+		// Fallback: .p8 Token-based Auth from file
 		authKey, err := token.AuthKeyFromFile(p8File)
 		if err != nil {
-			log.Printf("[Notification] Fatal: APNs .p8 key error: %v", err)
+			log.Printf("[Notification] Fatal: APNs .p8 key (file) error: %v", err)
 		} else {
 			tokenStruct := &token.Token{
 				AuthKey: authKey,
@@ -65,11 +80,20 @@ func InitNotificationService() {
 	}
 
 	// 2. FCM Setup
-	fcmCreds := os.Getenv("FCM_CREDENTIALS_FILE")
-	if fcmCreds != "" {
+	fcmJSON := os.Getenv("FCM_CREDENTIALS_JSON")
+	fcmPath := os.Getenv("FCM_CREDENTIALS_FILE")
+
+	if fcmJSON != "" || fcmPath != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		opt := option.WithAuthCredentialsFile(option.ServiceAccount, fcmCreds)
+
+		var opt option.ClientOption
+		if fcmJSON != "" {
+			opt = option.WithAuthCredentialsJSON(option.ServiceAccount, []byte(fcmJSON))
+		} else {
+			opt = option.WithAuthCredentialsFile(option.ServiceAccount, fcmPath)
+		}
+
 		app, err := firebase.NewApp(ctx, nil, opt)
 		if err != nil {
 			log.Printf("[Notification] Fatal: Firebase init error: %v", err)
