@@ -33,8 +33,8 @@ jobs:
       JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
       JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-      FCM_CREDENTIALS_JSON: ${{ secrets.FCM_CREDENTIALS_JSON }}
-      APNS_P8_KEY: ${{ secrets.APNS_P8_KEY }}
+      # FCM_CREDENTIALS_JSON: ${{ secrets.FCM_CREDENTIALS_JSON }}
+      # APNS_P8_KEY: ${{ secrets.APNS_P8_KEY }}
 
     steps:
       - name: Checkout
@@ -96,7 +96,8 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            FCM_CREDENTIALS_JSON=${{ secrets.FCM_CREDENTIALS_JSON }} APNS_P8_KEY=${{ secrets.APNS_P8_KEY }} \
+            FCM_CREDENTIALS_JSON='${{ secrets.FCM_CREDENTIALS_JSON }}' \
+            APNS_P8_KEY='${{ secrets.APNS_P8_KEY }}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -108,8 +109,8 @@ jobs:
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
               --from-env-file=back-trans-dev.env \
-              --from-literal=FCM_CREDENTIALS_JSON="${FCM_CREDENTIALS_JSON}" \
-              --from-literal=APNS_P8_KEY="${APNS_P8_KEY}" \
+              --from-literal=FCM_CREDENTIALS_JSON="$FCM_CREDENTIALS_JSON" \
+              --from-literal=APNS_P8_KEY="$APNS_P8_KEY" \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
             rm -f back-trans-dev.env
 
