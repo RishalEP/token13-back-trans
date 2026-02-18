@@ -39,6 +39,7 @@ jobs:
       APNS_KEY_ID: ${{ secrets.APNS_KEY_ID }}
       APNS_TOPIC: ${{ secrets.APNS_TOPIC }}
       APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID }}
+      APNS_P8_KEY: ${{ secrets.APNS_P8_KEY }}
 
     steps:
       - name: Checkout
@@ -92,7 +93,7 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' APNS_ENV='${APNS_ENV}' APNS_KEY_ID='${APNS_KEY_ID}' APNS_TOPIC='${APNS_TOPIC}' APNS_TEAM_ID='${APNS_TEAM_ID}' \
+            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' APNS_ENV='${APNS_ENV}' APNS_KEY_ID='${APNS_KEY_ID}' APNS_TOPIC='${APNS_TOPIC}' APNS_TEAM_ID='${APNS_TEAM_ID}' APNS_P8_KEY='${APNS_P8_KEY}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -109,6 +110,7 @@ jobs:
               --from-literal=APNS_KEY_ID="${APNS_KEY_ID}" \
               --from-literal=APNS_TOPIC="${APNS_TOPIC}" \
               --from-literal=APNS_TEAM_ID="${APNS_TEAM_ID}" \
+              --from-literal=APNS_P8_KEY="${APNS_P8_KEY}" \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
 
             echo "--- Apply Deployment, Service ---"

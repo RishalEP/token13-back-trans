@@ -61,6 +61,11 @@ spec:
                 secretKeyRef:
                   name: back-trans-dev-secrets
                   key: APNS_TEAM_ID
+            - name: APNS_P8_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: back-trans-dev-secrets
+                  key: APNS_P8_KEY                 
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
