@@ -30,20 +30,17 @@ spec:
           ports:
             - containerPort: 8800
               name: http-8800
-          envFrom:
-            - secretRef:
-                name: back-trans-dev-secrets
           env:
-            - name: FCM_CREDENTIALS_JSON
+            - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: back-trans-dev-secrets
-                  key: FCM_CREDENTIALS_JSON
-            - name: APNS_P8_KEY
+                  key: DATABASE_URL
+            - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
                   name: back-trans-dev-secrets
-                  key: APNS_P8_KEY
+                  key: REDIS_URL
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
@@ -55,3 +52,4 @@ spec:
             limits:
               cpu: 100m
               memory: 256Mi
+ # 
