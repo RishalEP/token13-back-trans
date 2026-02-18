@@ -12,6 +12,7 @@ import (
 	"firebase.google.com/go/v4/messaging"
 	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/certificate"
+	"github.com/sideshow/apns2/token"
 	"google.golang.org/api/option"
 )
 
@@ -31,25 +32,36 @@ func InitNotificationService() {
 	service := &NotificationService{}
 
 	// 1. APNs Setup
-	certFile := os.Getenv("APNS_CERT_FILE")
-	certPassword := os.Getenv("APNS_CERT_PASSWORD")
-	if certFile != "" {
-		cert, err := certificate.FromP12File(certFile, certPassword)
+	p8File := os.Getenv("APNS_P8_FILE")
+	if p8File != "" {
+		// Modern .p8 Token-based Auth
+		authKey, err := token.AuthKeyFromFile(p8File)
 		if err != nil {
-			log.Printf("[Notification] Fatal: APNs cert error: %v", err)
+			log.Printf("[Notification] Fatal: APNs .p8 key error: %v", err)
 		} else {
-			client := apns2.NewClient(cert)
-			// Toggle Sandbox vs Production via env
-			if strings.ToLower(os.Getenv("APNS_ENV")) == "sandbox" {
-				service.apnsClient = client.Development()
-				log.Println("[Notification] APNs Initialized (Development/Sandbox)")
-			} else {
-				service.apnsClient = client.Production()
-				log.Println("[Notification] APNs Initialized (Production)")
+			tokenStruct := &token.Token{
+				AuthKey: authKey,
+				KeyID:   os.Getenv("APNS_KEY_ID"),
+				TeamID:  os.Getenv("APNS_TEAM_ID"),
 			}
+			client := apns2.NewTokenClient(tokenStruct)
+			setupAPNsEnvironment(service, client)
 		}
 	} else {
-		log.Println("[Notification] APNs Disabled")
+		// Fallback to legacy .p12 Certificate-based Auth
+		certFile := os.Getenv("APNS_CERT_FILE")
+		certPassword := os.Getenv("APNS_CERT_PASSWORD")
+		if certFile != "" {
+			cert, err := certificate.FromP12File(certFile, certPassword)
+			if err != nil {
+				log.Printf("[Notification] Fatal: APNs .p12 cert error: %v", err)
+			} else {
+				client := apns2.NewClient(cert)
+				setupAPNsEnvironment(service, client)
+			}
+		} else {
+			log.Println("[Notification] APNs Disabled")
+		}
 	}
 
 	// 2. FCM Setup
@@ -75,6 +87,16 @@ func InitNotificationService() {
 	}
 
 	notifyService = service
+}
+
+func setupAPNsEnvironment(service *NotificationService, client *apns2.Client) {
+	if strings.ToLower(os.Getenv("APNS_ENV")) == "sandbox" {
+		service.apnsClient = client.Development()
+		log.Println("[Notification] APNs Initialized (Development/Sandbox)")
+	} else {
+		service.apnsClient = client.Production()
+		log.Println("[Notification] APNs Initialized (Production)")
+	}
 }
 
 // SendPushNotification returns a specific error code "token_invalid" if the token should be deleted from your DB.
@@ -135,7 +157,6 @@ func sendAPNsNotification(ctx context.Context, token string, title, body string,
 	}
 
 	if res.StatusCode != 200 {
-		// Production: Handle expired or invalid tokens
 		if res.Reason == apns2.ReasonBadDeviceToken || res.Reason == apns2.ReasonUnregistered {
 			log.Printf("[Notification] Removing invalid APNS token: %s", token)
 			return fmt.Errorf("%s: %s", ErrTokenInvalid, res.Reason)
