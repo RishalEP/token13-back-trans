@@ -546,6 +546,15 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		handleSolanaPayload(payload)
 	default:
+		if envelope["message"] != nil {
+			msg, _ := envelope["message"]
+			msgStr := string(msg)
+			if strings.Contains(msgStr, "PING") {
+				log.Printf("Pong")
+				return
+			}
+
+		}
 		log.Printf("Unsupported payload shape")
 		http.Error(w, "Unsupported payload", http.StatusBadRequest)
 		return
