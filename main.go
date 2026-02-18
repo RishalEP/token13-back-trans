@@ -167,12 +167,38 @@ type WalletAddress struct {
 	Active         bool      `gorm:"column:active;type:tinyint(1);not null;default:1"`
 }
 
+// UserWalletDevice represents the link between a WalletID and a physical device (iOS/Android)
+type UserWalletDevice struct {
+	WalletID    string    `gorm:"primaryKey;type:char(64)" json:"wallet_id"`
+	DeviceToken string    `gorm:"primaryKey;size:255" json:"device_token"`
+	DeviceType  string    `gorm:"size:10" json:"device_type"` // ios or android
+	CreatedAt   time.Time `gorm:"autoCreateTime"`
+}
+
+// NotificationLog stores the history/status of every push notification sent
+type NotificationLog struct {
+	ID          int64     `gorm:"primaryKey;autoIncrement"`
+	WalletID    string    `gorm:"size:64;index:idx_log_wallet"`
+	DeviceToken string    `gorm:"size:255;index:idx_log_token"`
+	DeviceType  string    `gorm:"size:10"`
+	Title       string    `gorm:"size:255"`
+	Body        string    `gorm:"type:text"`
+	Status      string    `gorm:"size:20"` // success or failed
+	ErrorMsg    string    `gorm:"type:text"`
+	TxHash      string    `gorm:"size:100;index:idx_log_tx"`
+	Chain       string    `gorm:"size:20"`
+	Direction   string    `gorm:"size:10"`
+	CreatedAt   time.Time `gorm:"autoCreateTime"`
+}
+
 func (t *WalletTransactionHistory) TableName() string { return "tron_transaction_histories" }
 func (t *EvmTransactionHistory) TableName() string    { return "evm_transaction_histories" }
 func (t *BtcTransactionHistory) TableName() string    { return "btc_transaction_histories" }
 func (t *SolTransactionHistory) TableName() string    { return "sol_transaction_histories" }
 func (u *UserBalance) TableName() string              { return "user_balances" }
 func (w *WalletAddress) TableName() string            { return "wallet_addresses" }
+func (d *UserWalletDevice) TableName() string         { return "user_wallet_devices" }
+func (l *NotificationLog) TableName() string          { return "notification_logs" }
 
 // ---------------------------------------------------------
 // 2. QUICKNODE PAYLOAD STRUCTURES (MAPPED TO JS OUTPUT)
@@ -359,12 +385,43 @@ const (
 // ---------------------------------------------------------
 
 func main() {
+	// err := godotenv.Load("cfg.env")
+	// if err != nil {
+	// 	log.Printf("Notice: cfg.env not found or error loading it: %v", err)
+	// }
+
 	initDatabase()
 	initRedis()
+	InitNotificationService()
 
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
 	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+
+	// Manual notification trigger endpoint
+	http.HandleFunc("/send-notification", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Only POST allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Token      string            `json:"token"`
+			DeviceType string            `json:"device_type"`
+			Title      string            `json:"title"`
+			Body       string            `json:"body"`
+			Data       map[string]string `json:"data"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		err := SendPushNotification(req.Token, req.DeviceType, req.Title, req.Body, req.Data)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("Notification sent successfully"))
 	})
 
 	log.Println("Backtrans Service Listening on :8800")
@@ -386,7 +443,16 @@ func initDatabase() {
 	}
 
 	// AutoMigrate tables to ensure they exist
-	if err := db.AutoMigrate(&WalletTransactionHistory{}, &EvmTransactionHistory{}, &BtcTransactionHistory{}, &SolTransactionHistory{}, &UserBalance{}, &WalletAddress{}); err != nil {
+	if err := db.AutoMigrate(
+		&WalletTransactionHistory{},
+		&EvmTransactionHistory{},
+		&BtcTransactionHistory{},
+		&SolTransactionHistory{},
+		&UserBalance{},
+		&WalletAddress{},
+		&UserWalletDevice{},
+		&NotificationLog{},
+	); err != nil {
 		log.Fatalf("AutoMigrate failed: %v", err)
 	}
 	log.Println("Connected to DB and Tables Checked")
@@ -693,6 +759,14 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 						log.Printf("[SOLANA] DB Error for %s: %v", wa.Address, result.Error)
 					} else {
 						log.Printf("[SOLANA] Saved Tx for %s", wa.Address)
+						triggerNotification(NotificationParams{
+							Address:   walletAddr,
+							Chain:     "solana",
+							Amount:    dbTx.Amount,
+							Symbol:    dbTx.TokenSymbol,
+							Direction: dbTx.Direction,
+							TxHash:    dbTx.Signature,
+						})
 						updateRedis(wa.Address, "solana", dbTx)
 						if result.RowsAffected > 0 {
 							insertedAny = true
@@ -794,6 +868,14 @@ func processTronTransaction(tx Transfer) {
 				log.Printf("[TRON] DB Error for %s: %v", wa.Address, result.Error)
 			} else {
 				log.Printf("[TRON] Saved Tx for %s", wa.Address)
+				triggerNotification(NotificationParams{
+					Address:   walletHex,
+					Chain:     "tron",
+					Amount:    dbTx.Amount,
+					Symbol:    dbTx.TokenSymbol,
+					Direction: dbTx.Direction,
+					TxHash:    dbTx.TxHash,
+				})
 				updateRedis(wa.Address, "tron", dbTx)
 				if result.RowsAffected > 0 {
 					insertedAny = true
@@ -894,6 +976,14 @@ func processEvmTransaction(tx Transfer) {
 				log.Printf("[EVM] DB Error for %s: %v", wa.Address, result.Error)
 			} else {
 				log.Printf("[EVM] Saved Tx for %s", wa.Address)
+				triggerNotification(NotificationParams{
+					Address:   strings.ToLower(walletAddr),
+					Chain:     "eth",
+					Amount:    dbTx.Amount,
+					Symbol:    dbTx.TokenSymbol,
+					Direction: dbTx.Direction,
+					TxHash:    dbTx.TxHash,
+				})
 				updateRedis(wa.Address, "eth", dbTx)
 				if result.RowsAffected > 0 {
 					insertedAny = true
@@ -996,6 +1086,14 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 				log.Printf("[MORALIS] DB Error for %s: %v", wa.Address, result.Error)
 			} else {
 				log.Printf("[MORALIS] Saved native tx for %s", wa.Address)
+				triggerNotification(NotificationParams{
+					Address:   walletAddr,
+					Chain:     chainInfo.Chain,
+					Amount:    dbTx.Amount,
+					Symbol:    "native",
+					Direction: dbTx.Direction,
+					TxHash:    dbTx.TxHash,
+				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
 					insertedAny = true
@@ -1110,6 +1208,14 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 				log.Printf("[MORALIS] DB Error for %s: %v", wa.Address, result.Error)
 			} else {
 				log.Printf("[MORALIS] Saved ERC20 tx for %s", wa.Address)
+				triggerNotification(NotificationParams{
+					Address:   walletAddr,
+					Chain:     chainInfo.Chain,
+					Amount:    dbTx.Amount,
+					Symbol:    dbTx.TokenSymbol,
+					Direction: dbTx.Direction,
+					TxHash:    dbTx.TxHash,
+				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
 					insertedAny = true
@@ -1247,6 +1353,14 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 				log.Printf("[BTC] DB Error for %s: %v", wa.Address, result.Error)
 			} else {
 				log.Printf("[BTC] Saved tx for %s", wa.Address)
+				triggerNotification(NotificationParams{
+					Address:   walletAddr,
+					Chain:     "BTC",
+					Amount:    dbTx.Amount,
+					Symbol:    "BTC",
+					Direction: dbTx.Direction,
+					TxHash:    dbTx.TxHash,
+				})
 				updateRedis(wa.Address, "btc", dbTx)
 				if result.RowsAffected > 0 {
 					delta := amountStr
@@ -1608,4 +1722,113 @@ func formatTokenAmount(value *big.Int, decimals int) string {
 		s = strings.TrimRight(s, ".")
 	}
 	return s
+}
+
+type NotificationParams struct {
+	Address   string
+	Chain     string
+	Amount    string
+	Symbol    string
+	Direction string
+	TxHash    string
+	Extras    map[string]string
+}
+
+func triggerNotification(params NotificationParams) {
+	address := params.Address
+	chain := params.Chain
+	amount := params.Amount
+	symbol := params.Symbol
+	direction := params.Direction
+	txHash := params.TxHash
+	extras := params.Extras
+
+	if symbol == "" || symbol == "native" {
+		switch strings.ToLower(chain) {
+		case "tron":
+			symbol = "TRX"
+		case "btc":
+			symbol = "BTC"
+		case "eth":
+			symbol = "ETH"
+		case "solana":
+			symbol = "SOL"
+		default:
+			symbol = strings.ToUpper(chain)
+		}
+	}
+
+	// 1. Find the WalletID(s) associated with this address
+	var walletAddrs []WalletAddress
+	err := db.Where("address = ? AND chain_id = ?", normalizeAddress(chain, address), chain).Find(&walletAddrs).Error
+	if err != nil {
+		log.Printf("[Notification] DB error looking up wallet for %s: %v", address, err)
+		return
+	}
+	if len(walletAddrs) == 0 {
+		return
+	}
+
+	// 2. Broadcast to all devices linked to these WalletIDs
+	for _, wa := range walletAddrs {
+		var devices []UserWalletDevice
+		db.Where("wallet_id = ?", wa.WalletID).Find(&devices)
+
+		title := "Transaction Detected"
+		body := ""
+
+		if direction == "send" {
+			title = "Transaction Sent"
+			body = fmt.Sprintf("Successfully sent %s %s on ", amount, symbol)
+		} else {
+			title = "Transaction Received"
+			body = fmt.Sprintf("You received %s %s ", amount, symbol)
+		}
+
+		data := map[string]string{
+			"wallet_id": wa.WalletID,
+			"address":   address,
+			"amount":    amount,
+			"symbol":    symbol,
+			"chain":     chain,
+			"direction": direction,
+			"tx_hash":   txHash,
+			"type":      "transaction_alert",
+		}
+
+		// Add any extra generic fields
+		for k, v := range extras {
+			data[k] = v
+		}
+
+		for _, dev := range devices {
+			err := SendPushNotification(dev.DeviceToken, dev.DeviceType, title, body, data)
+
+			// Record in DB
+			logEntry := NotificationLog{
+				WalletID:    wa.WalletID,
+				DeviceToken: dev.DeviceToken,
+				DeviceType:  dev.DeviceType,
+				Title:       title,
+				Body:        body,
+				Status:      "success",
+				TxHash:      txHash,
+				Chain:       chain,
+				Direction:   direction,
+			}
+
+			if err != nil {
+				logEntry.Status = "failed"
+				logEntry.ErrorMsg = err.Error()
+				log.Printf("[Notification] Failed to send to %s: %v", dev.DeviceToken, err)
+				if strings.Contains(err.Error(), ErrTokenInvalid) {
+					log.Printf("[Notification] Purging invalid token: %s", dev.DeviceToken)
+					//db.Where("device_token = ?", dev.DeviceToken).Delete(&UserWalletDevice{})
+				}
+			} else {
+				log.Printf("[Notification] Successfully triggered for %s (%s)", address, direction)
+			}
+			db.Create(&logEntry)
+		}
+	}
 }
