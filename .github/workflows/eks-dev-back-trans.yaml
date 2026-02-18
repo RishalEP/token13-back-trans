@@ -77,18 +77,25 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_JUMP_PRIVATE_KEY }}
 
+      - name: Parse Back Trans Secrets (dev)
+        run: |
+          echo '${{ secrets.EKS_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
+          jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans-dev.env
+          shred -u back-trans.json
+
       - name: Copy back-trans manifests to Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST 'mkdir -p ~/deploy/back-trans/dev/back-trans'
           rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/dev/services-eks/back-trans/ \
                 $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
+          scp -o StrictHostKeyChecking=no back-trans-dev.env \
+            $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
 
 
       - name: Deploy back-trans to EKS via Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -99,9 +106,9 @@ jobs:
 
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
-              --from-literal=DATABASE_URL="${DATABASE_URL}" \
-              --from-literal=REDIS_URL="${REDIS_URL}" \
+              --from-env-file=back-trans-dev.env \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
+            rm -f back-trans-dev.env
 
             echo "--- Apply Deployment, Service ---"
             kubectl $KCTX -n dev apply -f back-trans-deployment.yaml
