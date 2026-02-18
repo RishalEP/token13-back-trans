@@ -33,6 +33,17 @@ spec:
           envFrom:
             - secretRef:
                 name: back-trans-dev-secrets
+          env:
+            - name: FCM_CREDENTIALS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: back-trans-dev-secrets
+                  key: FCM_CREDENTIALS_JSON
+            - name: APNS_P8_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: back-trans-dev-secrets
+                  key: APNS_P8_KEY
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
