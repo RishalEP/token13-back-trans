@@ -61,16 +61,15 @@ spec:
                 secretKeyRef:
                   name: back-trans-dev-secrets
                   key: APNS_TEAM_ID
-            - name: APNS_P8_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: back-trans-dev-secrets
-                  key: APNS_P8_KEY
-            - name: FCM_CREDENTIALS_JSON
-              valueFrom:
-                secretKeyRef:
-                  name: back-trans-dev-secrets
-                  key: FCM_CREDENTIALS_JSON
+            - name: FCM_CREDENTIALS_FILE
+              value: /secrets/firebase.json
+          volumeMounts:
+            - name: apns-key
+              mountPath: /secrets/apns.p8
+              subPath: APNS_P8_KEY
+            - name: fcm-key
+              mountPath: /secrets/firebase.json
+              subPath: FCM_CREDENTIALS_JSON
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
@@ -82,4 +81,10 @@ spec:
             limits:
               cpu: 100m
               memory: 256Mi
-              #
+      volumes:
+        - name: apns-key
+          secret:
+            secretName: back-trans-dev-secrets
+        - name: fcm-key
+          secret:
+            secretName: back-trans-dev-secrets

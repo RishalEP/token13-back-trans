@@ -115,7 +115,7 @@ jobs:
               --from-literal=APNS_TOPIC="${APNS_TOPIC}" \
               --from-literal=APNS_TEAM_ID="${APNS_TEAM_ID}" \
               --from-file=APNS_P8_KEY=apns.p8 \
-              --from-literal=FCM_CREDENTIALS_JSON="$(cat firebase.json)" \
+              --from-file=FCM_CREDENTIALS_JSON=firebase.json \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
 
             rm -f apns.p8 firebase.json
