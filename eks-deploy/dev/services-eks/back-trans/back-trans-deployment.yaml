@@ -58,4 +58,3 @@ spec:
             items:
               - key: FCM_CREDENTIALS_FILE
                 path: firebase.json
-#

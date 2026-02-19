@@ -108,8 +108,13 @@ jobs:
             echo "$FCM_CREDENTIALS_JSON" > firebase.json
 
             echo "=== Creating and updating back-trans secrets at runtime ==="
+            LITERALS=""
+            while IFS= read -r line; do
+              LITERALS="$LITERALS --from-literal=$line"
+            done < back-trans.env
+
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
-              --from-env-file=back-trans.env \
+              $LITERALS \
               --from-file=APNS_P8_KEY=apns.p8 \
               --from-file=FCM_CREDENTIALS_FILE=firebase.json \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
