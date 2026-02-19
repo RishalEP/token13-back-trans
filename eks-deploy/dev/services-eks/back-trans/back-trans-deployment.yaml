@@ -65,7 +65,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: back-trans-dev-secrets
-                  key: APNS_P8_KEY                 
+                  key: APNS_P8_KEY
+            - name: FCM_CREDENTIALS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: back-trans-dev-secrets
+                  key: FCM_CREDENTIALS_JSON
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001

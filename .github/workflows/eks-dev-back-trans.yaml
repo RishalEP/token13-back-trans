@@ -40,6 +40,7 @@ jobs:
       APNS_TOPIC: ${{ secrets.APNS_TOPIC }}
       APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID }}
       APNS_P8_KEY: ${{ secrets.APNS_P8_KEY }}
+      FCM_CREDENTIALS_JSON: ${{ secrets.FCM_CREDENTIALS_JSON }}
 
     steps:
       - name: Checkout
@@ -93,7 +94,7 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' APNS_ENV='${APNS_ENV}' APNS_KEY_ID='${APNS_KEY_ID}' APNS_TOPIC='${APNS_TOPIC}' APNS_TEAM_ID='${APNS_TEAM_ID}' APNS_P8_KEY='${APNS_P8_KEY}' \
+            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' APNS_ENV='${APNS_ENV}' APNS_KEY_ID='${APNS_KEY_ID}' APNS_TOPIC='${APNS_TOPIC}' APNS_TEAM_ID='${APNS_TEAM_ID}' APNS_P8_KEY='${APNS_P8_KEY}' FCM_CREDENTIALS_JSON='${FCM_CREDENTIALS_JSON}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -103,6 +104,7 @@ jobs:
             KCTX="--context=explorer-prod"
 
             echo "$APNS_P8_KEY" | sed 's/\\n/\n/g' | tr -d '\r' > apns.p8
+            echo "$FCM_CREDENTIALS_JSON" | sed 's/\\n/\n/g' | tr -d '\r' > firebase.json
 
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
@@ -113,9 +115,10 @@ jobs:
               --from-literal=APNS_TOPIC="${APNS_TOPIC}" \
               --from-literal=APNS_TEAM_ID="${APNS_TEAM_ID}" \
               --from-file=APNS_P8_KEY=apns.p8 \
+              --from-file=FCM_CREDENTIALS_JSON=firebase.json \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
-            
-            rm -f apns.p8
+
+            rm -f apns.p8 firebase.json
 
             echo "--- Apply Deployment, Service ---"
             kubectl $KCTX -n dev apply -f back-trans-deployment.yaml
