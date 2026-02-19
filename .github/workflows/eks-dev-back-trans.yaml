@@ -35,12 +35,11 @@ jobs:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_DEV }}
       REDIS_URL: ${{ secrets.REDIS_URL_DEV }}
-      APNS_ENV: ${{ secrets.APNS_ENV }}
-      APNS_KEY_ID: ${{ secrets.APNS_KEY_ID }}
-      APNS_TOPIC: ${{ secrets.APNS_TOPIC }}
-      APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID }}
-      APNS_P8_KEY: ${{ secrets.APNS_P8_KEY }}
-      FCM_CREDENTIALS_JSON: ${{ secrets.FCM_CREDENTIALS_JSON }}
+      APNS_ENV: ${{ secrets.APNS_ENV_DEV }}
+      APNS_KEY_ID: ${{ secrets.APNS_KEY_ID_DEV }}
+      APNS_TOPIC: ${{ secrets.APNS_TOPIC_DEV }}
+      APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID_DEV }}
+      APNS_P8_KEY: ${{ secrets.APNS_P8_KEY_DEV }}
 
     steps:
       - name: Checkout
@@ -83,18 +82,26 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_JUMP_PRIVATE_KEY }}
 
+      - name: Parse back trans firebase Secrets (dev)
+        run: |
+          echo '${{ secrets.FCM_CREDENTIALS_JSON_DEV }}' > firebase.json
+          jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' firebase.json > firebase.env
+          shred -u firebase.json
+
       - name: Copy back-trans manifests to Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST 'mkdir -p ~/deploy/back-trans/dev/back-trans'
           rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/dev/services-eks/back-trans/ \
                 $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
+          scp -o StrictHostKeyChecking=no firebase.env \
+            $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
 
 
       - name: Deploy back-trans to EKS via Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' APNS_ENV='${APNS_ENV}' APNS_KEY_ID='${APNS_KEY_ID}' APNS_TOPIC='${APNS_TOPIC}' APNS_TEAM_ID='${APNS_TEAM_ID}' APNS_P8_KEY='${APNS_P8_KEY}' FCM_CREDENTIALS_JSON='${FCM_CREDENTIALS_JSON}' \
+            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' APNS_ENV='${APNS_ENV}' APNS_KEY_ID='${APNS_KEY_ID}' APNS_TOPIC='${APNS_TOPIC}' APNS_TEAM_ID='${APNS_TEAM_ID}' APNS_P8_KEY='${APNS_P8_KEY}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -104,7 +111,6 @@ jobs:
             KCTX="--context=explorer-prod"
 
             echo "$APNS_P8_KEY" | sed 's/\\n/\n/g' | tr -d '\r' > apns.p8
-            echo "$FCM_CREDENTIALS_JSON" | sed 's/\\n/\n/g' | tr -d '\r' > firebase.json
 
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
@@ -115,10 +121,10 @@ jobs:
               --from-literal=APNS_TOPIC="${APNS_TOPIC}" \
               --from-literal=APNS_TEAM_ID="${APNS_TEAM_ID}" \
               --from-file=APNS_P8_KEY=apns.p8 \
-              --from-file=FCM_CREDENTIALS_JSON=firebase.json \
+              --from-env-file=firebase.env \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
 
-            rm -f apns.p8 firebase.json
+            rm -f apns.p8 firebase.env
 
             echo "--- Apply Deployment, Service ---"
             kubectl $KCTX -n dev apply -f back-trans-deployment.yaml
