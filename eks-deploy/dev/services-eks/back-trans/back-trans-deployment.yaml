@@ -62,7 +62,7 @@ spec:
                   name: back-trans-dev-secrets
                   key: APNS_TEAM_ID
             - name: FCM_CREDENTIALS_FILE
-              value: /secrets/firebase.json
+              value: /secrets/firebase.json   # <-- App reads from this file
           volumeMounts:
             - name: apns-key
               mountPath: /secrets/apns.p8
