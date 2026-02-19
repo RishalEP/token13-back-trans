@@ -102,7 +102,7 @@ jobs:
 
             KCTX="--context=explorer-prod"
 
-            echo "$APNS_P8_KEY" > apns.p8
+            echo "$APNS_P8_KEY" | sed 's/\\n/\n/g' | tr -d '\r' > apns.p8
 
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
