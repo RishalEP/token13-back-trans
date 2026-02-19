@@ -33,12 +33,6 @@ jobs:
       JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
       JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_DEV }}
-      REDIS_URL: ${{ secrets.REDIS_URL_DEV }}
-      APNS_ENV: ${{ secrets.APNS_ENV_DEV }}
-      APNS_KEY_ID: ${{ secrets.APNS_KEY_ID_DEV }}
-      APNS_TOPIC: ${{ secrets.APNS_TOPIC_DEV }}
-      APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID_DEV }}
       APNS_P8_KEY: ${{ secrets.APNS_P8_KEY_DEV }}
       FCM_CREDENTIALS_JSON: ${{ secrets.FCM_CREDENTIALS_JSON_DEV }}
 
@@ -83,18 +77,25 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_JUMP_PRIVATE_KEY }}
 
+      - name: Parse Explorer Backend Secrets (dev)
+        run: |
+          echo '${{ secrets.EKS_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
+          jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans.env
+          shred -u back-trans.json
+
       - name: Copy back-trans manifests to Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST 'mkdir -p ~/deploy/back-trans/dev/back-trans'
           rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/dev/services-eks/back-trans/ \
                 $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
-
+          scp -o StrictHostKeyChecking=no back-trans.env \
+                $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
 
       - name: Deploy back-trans to EKS via Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' APNS_ENV='${APNS_ENV}' APNS_KEY_ID='${APNS_KEY_ID}' APNS_TOPIC='${APNS_TOPIC}' APNS_TEAM_ID='${APNS_TEAM_ID}' APNS_P8_KEY='${APNS_P8_KEY}' FCM_CREDENTIALS_JSON='${FCM_CREDENTIALS_JSON}' \
+            APNS_P8_KEY='${APNS_P8_KEY}' FCM_CREDENTIALS_JSON='${FCM_CREDENTIALS_JSON}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -108,12 +109,7 @@ jobs:
 
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
-              --from-literal=DATABASE_URL="${DATABASE_URL}" \
-              --from-literal=REDIS_URL="${REDIS_URL}" \
-              --from-literal=APNS_ENV="${APNS_ENV}" \
-              --from-literal=APNS_KEY_ID="${APNS_KEY_ID}" \
-              --from-literal=APNS_TOPIC="${APNS_TOPIC}" \
-              --from-literal=APNS_TEAM_ID="${APNS_TEAM_ID}" \
+              --from-env-file=back-trans.env \
               --from-file=APNS_P8_KEY=apns.p8 \
               --from-file=FCM_CREDENTIALS_FILE=firebase.json \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
