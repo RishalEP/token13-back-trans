@@ -102,6 +102,8 @@ jobs:
 
             KCTX="--context=explorer-prod"
 
+            echo "$APNS_P8_KEY" > apns.p8
+
             echo "=== Creating and updating back-trans secrets at runtime ==="
             kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
               --from-literal=DATABASE_URL="${DATABASE_URL}" \
@@ -110,8 +112,10 @@ jobs:
               --from-literal=APNS_KEY_ID="${APNS_KEY_ID}" \
               --from-literal=APNS_TOPIC="${APNS_TOPIC}" \
               --from-literal=APNS_TEAM_ID="${APNS_TEAM_ID}" \
-              --from-literal=APNS_P8_KEY="${APNS_P8_KEY}" \
+              --from-literal=APNS_P8_KEY=apns.p8 \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
+            
+            rm -f apns.p8
 
             echo "--- Apply Deployment, Service ---"
             kubectl $KCTX -n dev apply -f back-trans-deployment.yaml
