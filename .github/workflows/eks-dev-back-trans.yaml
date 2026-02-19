@@ -112,7 +112,7 @@ jobs:
               --from-literal=APNS_KEY_ID="${APNS_KEY_ID}" \
               --from-literal=APNS_TOPIC="${APNS_TOPIC}" \
               --from-literal=APNS_TEAM_ID="${APNS_TEAM_ID}" \
-              --from-literal=APNS_P8_KEY=apns.p8 \
+              --from-file=APNS_P8_KEY=apns.p8 \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
             
             rm -f apns.p8
