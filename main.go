@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcutil/base58"
@@ -26,6 +28,11 @@ var (
 	db  *gorm.DB
 	rdb *redis.Client
 	ctx = context.Background()
+
+	priceHTTPClient     = &http.Client{Timeout: 5 * time.Second}
+	nativePriceCacheMu  sync.Mutex
+	nativePriceCache    = map[string]priceCacheEntry{}
+	nativePriceCacheTTL = 60 * time.Second
 )
 
 // ---------------------------------------------------------
@@ -280,7 +287,7 @@ type MoralisErc20Transfer struct {
 
 // QuickNode BTC payload
 type QuickNodeBtcPayload struct {
-	Data []BtcBlock `json:"data"`
+	Transactions []BtcTx `json:"transactions"`
 }
 
 // QuickNode Solana payload
@@ -497,13 +504,21 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("Read error: %v", err)
+		log.Printf("Read error: %v (Body length: %d)", err, len(bodyBytes))
 		http.Error(w, "Read Error", http.StatusInternalServerError)
 		return
 	}
 	defer r.Body.Close()
 
-	log.Printf("Received payload body: %s", string(bodyBytes))
+	if len(bodyBytes) == 0 {
+		log.Printf("Empty body received. Content-Length: %d", r.ContentLength)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Empty body"))
+		return
+	}
+
+	log.Printf("Received request. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
+	log.Printf("Received payload body: [%s]", string(bodyBytes))
 
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
@@ -521,7 +536,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		handleQuickNodePayload(payload)
-	case envelope["chainId"] != nil && (envelope["txs"] != nil || envelope["erc20Transfers"] != nil):
+	case envelope["confirmed"] != nil && envelope["chainId"] != nil:
 		var payload MoralisEvmPayload
 		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 			log.Printf("Moralis decode error: %v", err)
@@ -529,7 +544,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		handleMoralisPayload(payload)
-	case envelope["data"] != nil:
+	case envelope["transactions"] != nil:
 		var payload QuickNodeBtcPayload
 		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 			log.Printf("BTC decode error: %v", err)
@@ -635,11 +650,9 @@ func handleMoralisPayload(payload MoralisEvmPayload) {
 }
 
 func handleBtcPayload(payload QuickNodeBtcPayload) {
-	log.Printf("Received BTC Batch. Blocks: %d", len(payload.Data))
-	for _, block := range payload.Data {
-		for _, tx := range block.Txs {
-			processBtcTransaction(block, tx)
-		}
+	log.Printf("Received BTC Batch. Count: %d", len(payload.Transactions))
+	for _, tx := range payload.Transactions {
+		processBtcTransaction(BtcBlock{Height: tx.BlockHeight, Time: tx.BlockTime}, tx)
 	}
 }
 
@@ -799,7 +812,18 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 // 6. TRON PROCESSOR
 // ---------------------------------------------------------
 func processTronTransaction(tx Transfer) {
-	// We loop through the RAW HEX addresses from QuickNode
+	// 1. Format Address (HEX -> Base58)
+	fromBase58, _ := HexToTronAddress(tx.From)
+	toBase58, _ := HexToTronAddress(tx.To)
+
+	if fromBase58 != "" {
+		tx.From = fromBase58
+	}
+	if toBase58 != "" {
+		tx.To = toBase58
+	}
+
+	// We loop through the Base58 addresses
 	wallets := []string{tx.From, tx.To}
 
 	// 1. Format Amount
@@ -809,8 +833,7 @@ func processTronTransaction(tx Transfer) {
 		decimals = tx.TokenDecimals
 	}
 	if tx.Value != "" && tx.Value != "0" {
-		valBig, _ := new(big.Int).SetString(cleanHex(tx.Value), 0)
-		if valBig != nil {
+		if valBig, ok := parseFlexibleBigInt(tx.Value); ok {
 			amountStr = formatTokenAmount(valBig, decimals)
 		}
 	}
@@ -921,6 +944,7 @@ func processEvmTransaction(tx Transfer) {
 		gasPrice = big.NewInt(0)
 	}
 	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
+	feeNativeStr, feeUsd := computeNetworkFeeNativeAndUsd(feeWei, evmChainInfo{Chain: "ETH", RedisKey: "eth"})
 
 	// Format Amount
 	amountStr := tx.Value
@@ -954,26 +978,28 @@ func processEvmTransaction(tx Transfer) {
 			}
 
 			dbTx := EvmTransactionHistory{
-				WalletAddress:   wa.Address,
-				TxHash:          tx.TxHash,
-				Chain:           "ETH",
-				BlockNumber:     int64(tx.BlockNumber),
-				BlockTime:       tx.BlockTime,
-				FromAddress:     strings.ToLower(tx.From),
-				ToAddress:       strings.ToLower(tx.To),
-				Amount:          amountStr,
-				GasUsed:         gasUsed.Int64(),
-				GasPrice:        gasPrice.String(),
-				NetworkFee:      feeWei.String(),
-				Status:          "success",
-				TransactionType: "transfer",
-				Standard:        tx.Standard,
-				ContractAddress: strings.ToLower(tx.Contract),
-				TokenName:       tx.TokenName,
-				TokenSymbol:     tx.TokenSymbol,
-				TokenDecimal:    uint8(decimals),
-				Direction:       direction,
-				CreatedAt:       time.Now(),
+				WalletAddress:    wa.Address,
+				TxHash:           tx.TxHash,
+				Chain:            "ETH",
+				BlockNumber:      int64(tx.BlockNumber),
+				BlockTime:        tx.BlockTime,
+				FromAddress:      strings.ToLower(tx.From),
+				ToAddress:        strings.ToLower(tx.To),
+				Amount:           amountStr,
+				GasUsed:          gasUsed.Int64(),
+				GasPrice:         gasPrice.String(),
+				NetworkFee:       feeWei.String(),
+				NetworkFeeNative: feeNativeStr,
+				NetworkFeeUsd:    feeUsd,
+				Status:           "success",
+				TransactionType:  "transfer",
+				Standard:         tx.Standard,
+				ContractAddress:  strings.ToLower(tx.Contract),
+				TokenName:        tx.TokenName,
+				TokenSymbol:      tx.TokenSymbol,
+				TokenDecimal:     uint8(decimals),
+				Direction:        direction,
+				CreatedAt:        time.Now(),
 			}
 
 			result := db.Clauses(clause.OnConflict{
@@ -1032,6 +1058,7 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 	}
 	gasPrice := parseBigInt(tx.GasPrice)
 	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
+	feeNativeStr, feeUsd := computeNetworkFeeNativeAndUsd(feeWei, chainInfo)
 
 	wallets := []string{tx.FromAddress, tx.ToAddress}
 	insertedAny := false
@@ -1052,24 +1079,26 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 			}
 
 			dbTx := EvmTransactionHistory{
-				WalletAddress:   wa.Address,
-				TxHash:          tx.Hash,
-				Chain:           chainInfo.Chain,
-				BlockNumber:     blockNumber,
-				BlockTime:       blockTime,
-				FromAddress:     strings.ToLower(tx.FromAddress),
-				ToAddress:       strings.ToLower(tx.ToAddress),
-				Amount:          amountStr,
-				GasUsed:         gasUsed.Int64(),
-				GasPrice:        gasPrice.String(),
-				NetworkFee:      feeWei.String(),
-				Status:          "success",
-				TransactionType: "transfer",
-				Standard:        "native",
-				Direction:       direction,
-				CreatedAt:       time.Now(),
-				ChainId:         parseInt64(chainInfo.Chain), // fallback
-				GasLimit:        parseInt64(tx.Gas),
+				WalletAddress:    wa.Address,
+				TxHash:           tx.Hash,
+				Chain:            chainInfo.Chain,
+				BlockNumber:      blockNumber,
+				BlockTime:        blockTime,
+				FromAddress:      strings.ToLower(tx.FromAddress),
+				ToAddress:        strings.ToLower(tx.ToAddress),
+				Amount:           amountStr,
+				GasUsed:          gasUsed.Int64(),
+				GasPrice:         gasPrice.String(),
+				NetworkFee:       feeWei.String(),
+				NetworkFeeNative: feeNativeStr,
+				NetworkFeeUsd:    feeUsd,
+				Status:           "success",
+				TransactionType:  "transfer",
+				Standard:         "native",
+				Direction:        direction,
+				CreatedAt:        time.Now(),
+				ChainId:          parseInt64(chainInfo.Chain), // fallback
+				GasLimit:         parseInt64(tx.Gas),
 			}
 			// If we had more info from chainInfo
 			if chainInfo.Chain == "ETH" {
@@ -1152,6 +1181,7 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 		gasPrice = parseBigInt(txRef.GasPrice)
 	}
 	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
+	feeNativeStr, feeUsd := computeNetworkFeeNativeAndUsd(feeWei, chainInfo)
 
 	wallets := []string{transfer.From, transfer.To}
 	insertedAny := false
@@ -1172,27 +1202,29 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 			}
 
 			dbTx := EvmTransactionHistory{
-				WalletAddress:   wa.Address,
-				TxHash:          transfer.TransactionHash,
-				Chain:           chainInfo.Chain,
-				BlockNumber:     blockNumber,
-				BlockTime:       blockTime,
-				FromAddress:     strings.ToLower(transfer.From),
-				ToAddress:       strings.ToLower(transfer.To),
-				Amount:          amountStr,
-				GasUsed:         gasUsed.Int64(),
-				GasPrice:        gasPrice.String(),
-				NetworkFee:      feeWei.String(),
-				Status:          "success",
-				TransactionType: "transfer",
-				Standard:        "erc20",
-				ContractAddress: strings.ToLower(transfer.Contract),
-				TokenName:       transfer.TokenName,
-				TokenSymbol:     transfer.TokenSymbol,
-				TokenDecimal:    uint8(decimals),
-				Direction:       direction,
-				CreatedAt:       time.Now(),
-				GasLimit:        parseInt64(txRef.Gas),
+				WalletAddress:    wa.Address,
+				TxHash:           transfer.TransactionHash,
+				Chain:            chainInfo.Chain,
+				BlockNumber:      blockNumber,
+				BlockTime:        blockTime,
+				FromAddress:      strings.ToLower(transfer.From),
+				ToAddress:        strings.ToLower(transfer.To),
+				Amount:           amountStr,
+				GasUsed:          gasUsed.Int64(),
+				GasPrice:         gasPrice.String(),
+				NetworkFee:       feeWei.String(),
+				NetworkFeeNative: feeNativeStr,
+				NetworkFeeUsd:    feeUsd,
+				Status:           "success",
+				TransactionType:  "transfer",
+				Standard:         "erc20",
+				ContractAddress:  strings.ToLower(transfer.Contract),
+				TokenName:        transfer.TokenName,
+				TokenSymbol:      transfer.TokenSymbol,
+				TokenDecimal:     uint8(decimals),
+				Direction:        direction,
+				CreatedAt:        time.Now(),
+				GasLimit:         parseInt64(txRef.Gas),
 			}
 			if chainInfo.Chain == "ETH" {
 				dbTx.ChainId = 1
@@ -1262,14 +1294,11 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 	netByAddress := map[string]*big.Int{}
 
 	for _, vin := range tx.Vin {
-		if !vin.IsAddress {
-			continue
-		}
-		valueInt := parseBigInt(vin.Value)
 		for _, addr := range vin.Addresses {
 			if addr == "" {
 				continue
 			}
+			valueInt := parseBigInt(vin.Value)
 			if netByAddress[addr] == nil {
 				netByAddress[addr] = big.NewInt(0)
 			}
@@ -1278,14 +1307,11 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 	}
 
 	for _, vout := range tx.Vout {
-		if !vout.IsAddress {
-			continue
-		}
-		valueInt := parseBigInt(vout.Value)
 		for _, addr := range vout.Addresses {
 			if addr == "" {
 				continue
 			}
+			valueInt := parseBigInt(vout.Value)
 			if netByAddress[addr] == nil {
 				netByAddress[addr] = big.NewInt(0)
 			}
@@ -1410,10 +1436,28 @@ func userBalanceRedisKey(walletID, chainID, address string) string {
 }
 
 func nativeTokenAddress(chainID string) string {
-	if v := strings.TrimSpace(os.Getenv("NATIVE_TOKEN_ADDRESS")); v != "" {
-		return v
+	switch strings.ToLower(strings.TrimSpace(chainID)) {
+	case "eth", "ethereum", "1", "0x1", "ethereum-mainnet":
+		return "ETH"
+	case "tron", "tron-mainnet", "trx":
+		return "TRX"
+	case "btc", "bitcoin", "bitcoin-mainnet", "000000000019d6689c085ae165831e93":
+		return "BTC"
+	case "sol", "solana", "solana-mainnet", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
+		return "SOL"
+	case "pol", "polygon", "137", "0x89", "polygon-mainnet":
+		return "MATIC"
+	case "base", "8453", "0x2105", "base-mainnet":
+		return "ETH"
+	case "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain":
+		return "BNB"
+	default:
+		trimmed := strings.TrimSpace(chainID)
+		if trimmed == "" {
+			return "native"
+		}
+		return strings.ToUpper(trimmed)
 	}
-	return "native"
 }
 
 func normalizeAddress(chainID, address string) string {
@@ -1494,7 +1538,7 @@ func updateUserBalanceForAddress(chainID, address, tokenAddress, delta string) {
 	}
 
 	for _, wa := range walletAddrs {
-		effectiveToken := tokenAddress
+		effectiveToken := strings.ToUpper(tokenAddress)
 		if strings.TrimSpace(effectiveToken) == "" {
 			effectiveToken = nativeTokenAddress(wa.ChainID)
 		} else {
@@ -1509,14 +1553,6 @@ func updateUserBalanceForAddress(chainID, address, tokenAddress, delta string) {
 func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 	normalizedAddr := normalizeAddress(chainID, address)
 	addrCandidates := []string{normalizedAddr}
-
-	if isEvmChain(chainID) {
-		if strings.HasPrefix(normalizedAddr, "0x") {
-			addrCandidates = append(addrCandidates, strings.TrimPrefix(normalizedAddr, "0x"))
-		} else {
-			addrCandidates = append(addrCandidates, "0x"+normalizedAddr)
-		}
-	}
 
 	if strings.EqualFold(chainID, "tron") {
 		if base58Addr, err := HexToTronAddress(normalizedAddr); err == nil {
@@ -1547,19 +1583,19 @@ func getChainSynonyms(chainID string) []string {
 	c := strings.ToLower(chainID)
 	switch c {
 	case "eth", "ethereum", "1", "0x1", "ethereum-mainnet":
-		return []string{"ETH", "eth", "1", "0x1", "ethereum-mainnet", "ethereum"}
-	case "tron", "tron-mainnet", "trx":
-		return []string{"tron", "TRON", "tron-mainnet", "TRX"}
-	case "btc", "bitcoin", "bitcoin-mainnet":
-		return []string{"BTC", "btc", "bitcoin", "bitcoin-mainnet"}
-	case "sol", "solana", "solana-mainnet":
-		return []string{"solana", "SOL", "sol", "solana-mainnet"}
+		return []string{"1"}
+	case "tron", "tron-mainnet", "trx", "65":
+		return []string{"65"}
+	case "btc", "bitcoin", "bitcoin-mainnet", "000000000019d6689c085ae165831e93":
+		return []string{"000000000019d6689c085ae165831e93"}
+	case "sol", "solana", "solana-mainnet", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
+		return []string{"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"}
 	case "pol", "polygon", "137", "0x89", "polygon-mainnet":
-		return []string{"POL", "pol", "137", "0x89", "polygon-mainnet", "polygon"}
+		return []string{"137"}
 	case "base", "8453", "0x2105", "base-mainnet":
-		return []string{"BASE", "base", "8453", "0x2105", "base-mainnet"}
+		return []string{"8453"}
 	case "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain":
-		return []string{"BSC", "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain"}
+		return []string{"56"}
 	default:
 		return []string{chainID, strings.ToLower(chainID), strings.ToUpper(chainID)}
 	}
@@ -1640,15 +1676,20 @@ func updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress str
 	}
 }
 
-func parseBigInt(value string) *big.Int {
+func parseFlexibleBigInt(value string) (*big.Int, bool) {
+	value = strings.TrimSpace(value)
 	if value == "" {
-		return big.NewInt(0)
+		return nil, false
 	}
 	base := 10
 	if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
 		base = 0
 	}
-	parsed, ok := new(big.Int).SetString(value, base)
+	return new(big.Int).SetString(value, base)
+}
+
+func parseBigInt(value string) *big.Int {
+	parsed, ok := parseFlexibleBigInt(value)
 	if !ok {
 		return big.NewInt(0)
 	}
@@ -1672,9 +1713,6 @@ func parseInt64(value string) int64 {
 
 func firstVinAddress(vins []BtcVin) string {
 	for _, vin := range vins {
-		if !vin.IsAddress {
-			continue
-		}
 		if len(vin.Addresses) > 0 && vin.Addresses[0] != "" {
 			return vin.Addresses[0]
 		}
@@ -1684,9 +1722,6 @@ func firstVinAddress(vins []BtcVin) string {
 
 func firstVoutAddress(vouts []BtcVout) string {
 	for _, vout := range vouts {
-		if !vout.IsAddress {
-			continue
-		}
 		if len(vout.Addresses) > 0 && vout.Addresses[0] != "" {
 			return vout.Addresses[0]
 		}
@@ -1722,15 +1757,214 @@ func cleanHex(h string) string {
 }
 
 func formatTokenAmount(value *big.Int, decimals int) string {
-	fValue := new(big.Float).SetInt(value)
-	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
-	res := new(big.Float).Quo(fValue, divisor)
-	s := res.Text('f', decimals)
-	if strings.Contains(s, ".") {
-		s = strings.TrimRight(s, "0")
-		s = strings.TrimRight(s, ".")
+	if value == nil {
+		return "0"
 	}
-	return s
+	if decimals <= 0 {
+		return value.String()
+	}
+
+	sign := ""
+	absValue := new(big.Int).Set(value)
+	if absValue.Sign() < 0 {
+		sign = "-"
+		absValue.Abs(absValue)
+	}
+
+	divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	whole := new(big.Int)
+	fraction := new(big.Int)
+	whole.QuoRem(absValue, divisor, fraction)
+
+	if fraction.Sign() == 0 {
+		return sign + whole.String()
+	}
+
+	fracStr := fraction.String()
+	if len(fracStr) < decimals {
+		fracStr = strings.Repeat("0", decimals-len(fracStr)) + fracStr
+	}
+	fracStr = strings.TrimRight(fracStr, "0")
+	if fracStr == "" {
+		return sign + whole.String()
+	}
+
+	return sign + whole.String() + "." + fracStr
+}
+
+type priceCacheEntry struct {
+	price     float64
+	fetchedAt time.Time
+}
+
+func computeNetworkFeeNativeAndUsd(feeWei *big.Int, chainInfo evmChainInfo) (string, float64) {
+	if feeWei == nil {
+		return "0", 0
+	}
+
+	decimals := nativeTokenDecimals(chainInfo)
+	feeNativeStr := formatTokenAmount(feeWei, decimals)
+	if feeWei.Sign() == 0 {
+		return feeNativeStr, 0
+	}
+
+	priceUsd, ok := getNativeTokenPriceUSD(chainInfo)
+	if !ok || priceUsd <= 0 {
+		return feeNativeStr, 0
+	}
+
+	feeNativeFloat := new(big.Float).SetInt(feeWei)
+	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+	feeNativeFloat.Quo(feeNativeFloat, divisor)
+	feeUsdFloat := new(big.Float).Mul(feeNativeFloat, big.NewFloat(priceUsd))
+	feeUsd, _ := feeUsdFloat.Float64()
+
+	return feeNativeStr, roundToDecimals(feeUsd, 8)
+}
+
+func nativeTokenDecimals(chainInfo evmChainInfo) int {
+	switch strings.ToUpper(chainInfo.Chain) {
+	case "ETH", "POL", "BASE", "BSC":
+		return 18
+	default:
+		return 18
+	}
+}
+
+func getNativeTokenPriceUSD(chainInfo evmChainInfo) (float64, bool) {
+	chainKey := strings.ToUpper(chainInfo.Chain)
+	if chainKey == "" {
+		return 0, false
+	}
+
+	nativePriceCacheMu.Lock()
+	if entry, ok := nativePriceCache[chainKey]; ok && time.Since(entry.fetchedAt) < nativePriceCacheTTL {
+		nativePriceCacheMu.Unlock()
+		return entry.price, true
+	}
+	nativePriceCacheMu.Unlock()
+
+	price, err := fetchNativeTokenPriceUSD(chainInfo)
+	if err != nil || price <= 0 {
+		if err != nil {
+			log.Printf("[PRICE] fetch failed for %s: %v", chainKey, err)
+		}
+		return 0, false
+	}
+
+	nativePriceCacheMu.Lock()
+	nativePriceCache[chainKey] = priceCacheEntry{price: price, fetchedAt: time.Now()}
+	nativePriceCacheMu.Unlock()
+	return price, true
+}
+
+func fetchNativeTokenPriceUSD(chainInfo evmChainInfo) (float64, error) {
+	chainKey := strings.ToUpper(chainInfo.Chain)
+	switch chainKey {
+	case "ETH", "BASE":
+		if apiKey := strings.TrimSpace("QVDVP85WK5D2UT77DWYEZPHGWZ2U5JFU3K"); apiKey != "" {
+			if price, err := fetchEtherscanEthPriceUSD(apiKey); err == nil && price > 0 {
+				return price, nil
+			}
+		}
+		return fetchCoinGeckoPriceUSD("ethereum")
+	case "POL":
+		return fetchCoinGeckoPriceUSD("matic-network")
+	case "BSC":
+		return fetchCoinGeckoPriceUSD("binancecoin")
+	default:
+		return 0, fmt.Errorf("unsupported chain: %s", chainKey)
+	}
+}
+
+type etherscanPriceResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Result  struct {
+		Ethusd string `json:"ethusd"`
+	} `json:"result"`
+}
+
+func fetchEtherscanEthPriceUSD(apiKey string) (float64, error) {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://api.etherscan.io/api?module=stats&action=ethprice&apikey=%s", apiKey), nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "back-trans/price")
+
+	resp, err := priceHTTPClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("etherscan status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var payload etherscanPriceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0, err
+	}
+
+	if payload.Status != "" && payload.Status != "1" {
+		return 0, fmt.Errorf("etherscan error: %s", payload.Message)
+	}
+
+	price, err := strconv.ParseFloat(payload.Result.Ethusd, 64)
+	if err != nil {
+		return 0, err
+	}
+	return price, nil
+}
+
+func fetchCoinGeckoPriceUSD(coinID string) (float64, error) {
+	if coinID == "" {
+		return 0, fmt.Errorf("missing coingecko id")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://api.coingecko.com/api/v3/simple/price?ids=%s&vs_currencies=usd", coinID), nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "back-trans/price")
+
+	resp, err := priceHTTPClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("coingecko status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var payload map[string]map[string]float64
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0, err
+	}
+
+	coinData, ok := payload[coinID]
+	if !ok {
+		return 0, fmt.Errorf("coingecko response missing %s", coinID)
+	}
+	price, ok := coinData["usd"]
+	if !ok {
+		return 0, fmt.Errorf("coingecko response missing usd price for %s", coinID)
+	}
+	return price, nil
+}
+
+func roundToDecimals(value float64, decimals int) float64 {
+	if decimals < 0 {
+		return value
+	}
+	pow := math.Pow10(decimals)
+	return math.Round(value*pow) / pow
 }
 
 type NotificationParams struct {
@@ -1753,16 +1987,8 @@ func triggerNotification(params NotificationParams) {
 	extras := params.Extras
 
 	if symbol == "" || symbol == "native" {
-		switch strings.ToLower(chain) {
-		case "tron":
-			symbol = "TRX"
-		case "btc":
-			symbol = "BTC"
-		case "eth":
-			symbol = "ETH"
-		case "solana":
-			symbol = "SOL"
-		default:
+		symbol = nativeTokenAddress(chain)
+		if symbol == "native" && chain != "" {
 			symbol = strings.ToUpper(chain)
 		}
 	}
