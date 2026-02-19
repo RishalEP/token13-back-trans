@@ -77,7 +77,7 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_JUMP_PRIVATE_KEY }}
 
-      - name: Parse Explorer Backend Secrets (dev)
+      - name: Parse back trans Secrets (dev)
         run: |
           echo '${{ secrets.EKS_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
           jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans.env
