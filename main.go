@@ -602,6 +602,22 @@ func chainInfoFromMoralisChainId(chainId string) evmChainInfo {
 	}
 }
 
+func chainInfoFromQuickNodeNetwork(network string) evmChainInfo {
+	n := strings.ToLower(strings.TrimSpace(network))
+	switch {
+	case n == "8453" || n == "0x2105" || strings.Contains(n, "base"):
+		return evmChainInfo{Chain: "BASE", RedisKey: "base"}
+	case n == "137" || n == "0x89" || strings.Contains(n, "polygon") || strings.Contains(n, "matic"):
+		return evmChainInfo{Chain: "POL", RedisKey: "pol"}
+	case n == "56" || n == "0x38" || strings.Contains(n, "bsc") || strings.Contains(n, "binance"):
+		return evmChainInfo{Chain: "BSC", RedisKey: "bsc"}
+	case n == "1" || n == "0x1" || strings.Contains(n, "ethereum") || strings.Contains(n, "eth"):
+		return evmChainInfo{Chain: "ETH", RedisKey: "eth"}
+	default:
+		return evmChainInfo{Chain: "ETH", RedisKey: "eth"}
+	}
+}
+
 func handleQuickNodePayload(payload QuickNodePayload) {
 	log.Printf("Received Batch. Network: %s | Count: %d", payload.Metadata.Network, len(payload.Transfers))
 
@@ -615,12 +631,13 @@ func handleQuickNodePayload(payload QuickNodePayload) {
 	} else {
 		chainFamily = "eth"
 	}
+	chainInfo := chainInfoFromQuickNodeNetwork(network)
 
 	for _, tx := range payload.Transfers {
 		if chainFamily == "tron" {
 			processTronTransaction(tx)
 		} else {
-			processEvmTransaction(tx)
+			processEvmTransaction(tx, chainInfo)
 		}
 	}
 }
@@ -930,9 +947,9 @@ func processTronTransaction(tx Transfer) {
 // ---------------------------------------------------------
 // 7. EVM PROCESSOR (QUICKNODE)
 // ---------------------------------------------------------
-func processEvmTransaction(tx Transfer) {
+func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
 	wallets := []string{tx.From, tx.To}
-	log.Printf("[EVM] Processing Tx: %s", tx.TxHash)
+	log.Printf("[EVM] Processing %s Tx: %s", chainInfo.Chain, tx.TxHash)
 
 	// Calc Fees
 	gasUsed, _ := new(big.Int).SetString(cleanHex(tx.GasUsed), 0)
@@ -944,7 +961,7 @@ func processEvmTransaction(tx Transfer) {
 		gasPrice = big.NewInt(0)
 	}
 	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
-	feeNativeStr, feeUsd := computeNetworkFeeNativeAndUsd(feeWei, evmChainInfo{Chain: "ETH", RedisKey: "eth"})
+	feeNativeStr, feeUsd := computeNetworkFeeNativeAndUsd(feeWei, chainInfo)
 
 	// Format Amount
 	amountStr := tx.Value
@@ -966,7 +983,7 @@ func processEvmTransaction(tx Transfer) {
 			continue
 		}
 
-		waList, _ := resolveWalletAddresses("eth", walletAddr)
+		waList, _ := resolveWalletAddresses(chainInfo.RedisKey, walletAddr)
 		if len(waList) == 0 {
 			continue
 		}
@@ -980,7 +997,7 @@ func processEvmTransaction(tx Transfer) {
 			dbTx := EvmTransactionHistory{
 				WalletAddress:    wa.Address,
 				TxHash:           tx.TxHash,
-				Chain:            "ETH",
+				Chain:            chainInfo.Chain,
 				BlockNumber:      int64(tx.BlockNumber),
 				BlockTime:        tx.BlockTime,
 				FromAddress:      strings.ToLower(tx.From),
@@ -1001,6 +1018,19 @@ func processEvmTransaction(tx Transfer) {
 				Direction:        direction,
 				CreatedAt:        time.Now(),
 			}
+			if chainInfo.Chain == "ETH" {
+				dbTx.ChainId = 1
+				dbTx.ChainName = "Ethereum"
+			} else if chainInfo.Chain == "POL" {
+				dbTx.ChainId = 137
+				dbTx.ChainName = "Polygon"
+			} else if chainInfo.Chain == "BASE" {
+				dbTx.ChainId = 8453
+				dbTx.ChainName = "Base"
+			} else if chainInfo.Chain == "BSC" {
+				dbTx.ChainId = 56
+				dbTx.ChainName = "BSC"
+			}
 
 			result := db.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
@@ -1013,13 +1043,13 @@ func processEvmTransaction(tx Transfer) {
 				log.Printf("[EVM] Saved Tx for %s", wa.Address)
 				triggerNotification(NotificationParams{
 					Address:   strings.ToLower(walletAddr),
-					Chain:     "eth",
+					Chain:     chainInfo.RedisKey,
 					Amount:    dbTx.Amount,
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 				})
-				updateRedis(wa.Address, "eth", dbTx)
+				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
 					insertedAny = true
 				}
@@ -1030,11 +1060,11 @@ func processEvmTransaction(tx Transfer) {
 	if insertedAny {
 		tokenAddress := strings.TrimSpace(tx.Contract)
 		if tokenAddress == "" {
-			tokenAddress = nativeTokenAddress("eth")
+			tokenAddress = nativeTokenAddress(chainInfo.RedisKey)
 		} else {
-			tokenAddress = normalizeTokenAddress("eth", tokenAddress)
+			tokenAddress = normalizeTokenAddress(chainInfo.RedisKey, tokenAddress)
 		}
-		updateUserBalancesForTransfer("eth", tx.From, tx.To, tokenAddress, amountStr)
+		updateUserBalancesForTransfer(chainInfo.RedisKey, tx.From, tx.To, tokenAddress, amountStr)
 	}
 }
 
@@ -1448,7 +1478,7 @@ func nativeTokenAddress(chainID string) string {
 	case "pol", "polygon", "137", "0x89", "polygon-mainnet":
 		return "MATIC"
 	case "base", "8453", "0x2105", "base-mainnet":
-		return "ETH"
+		return "BASE ETH"
 	case "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain":
 		return "BNB"
 	default:
@@ -1478,10 +1508,39 @@ func normalizeTokenAddress(chainID, tokenAddress string) string {
 	}
 	switch strings.ToLower(chainID) {
 	case "eth", "pol", "base", "bsc":
+		if looksLikeEvmAddress(tokenAddress) {
+			return strings.ToLower(tokenAddress)
+		}
+		if strings.Contains(tokenAddress, " ") {
+			return tokenAddress
+		}
 		return strings.ToLower(tokenAddress)
 	default:
 		return tokenAddress
 	}
+}
+
+func looksLikeEvmAddress(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "0x") || strings.HasPrefix(trimmed, "0X") {
+		trimmed = trimmed[2:]
+	}
+	if len(trimmed) != 40 {
+		return false
+	}
+	for _, r := range trimmed {
+		if !isHexChar(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexChar(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
 }
 
 func negateAmount(amount string) string {
