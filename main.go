@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -497,32 +499,43 @@ func initRedis() {
 // ---------------------------------------------------------
 
 func webhookHandler(w http.ResponseWriter, r *http.Request) {
+	reqID := fmt.Sprintf("req-%d", time.Now().UnixNano())
+	start := time.Now()
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[REQUEST %s] Failure: panic: %v", reqID, rec)
+			log.Printf("[REQUEST %s] Panic stack: %s", reqID, debug.Stack())
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+	}()
+
 	if r.Method != http.MethodPost {
+		log.Printf("[REQUEST %s] Failure: method not allowed (%s)", reqID, r.Method)
 		http.Error(w, "Only POST allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("Read error: %v (Body length: %d)", err, len(bodyBytes))
+		log.Printf("[REQUEST %s] Failure: read error: %v (Body length: %d)", reqID, err, len(bodyBytes))
 		http.Error(w, "Read Error", http.StatusInternalServerError)
 		return
 	}
 	defer r.Body.Close()
 
 	if len(bodyBytes) == 0 {
-		log.Printf("Empty body received. Content-Length: %d", r.ContentLength)
+		log.Printf("[REQUEST %s] Failure: empty body received. Content-Length: %d", reqID, r.ContentLength)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Empty body"))
 		return
 	}
 
-	log.Printf("Received request. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
-	log.Printf("Received payload body: [%s]", string(bodyBytes))
+	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
+	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
 
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
-		log.Printf("JSON decode error: %v", err)
+		log.Printf("[REQUEST %s] Failure: JSON decode error: %v", reqID, err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -531,50 +544,61 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	case envelope["metadata"] != nil && envelope["transfers"] != nil:
 		var payload QuickNodePayload
 		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			log.Printf("QuickNode decode error: %v", err)
+			log.Printf("[REQUEST %s] Failure: QuickNode decode error: %v", reqID, err)
 			http.Error(w, "Invalid QuickNode JSON", http.StatusBadRequest)
 			return
 		}
+		chainInfo := chainInfoFromQuickNodeNetwork(payload.Metadata.Network)
+		log.Printf("[REQUEST %s] Starting processing: type=quicknode chain=%s network=%s transfers=%d", reqID, chainInfo.Chain, payload.Metadata.Network, len(payload.Transfers))
 		handleQuickNodePayload(payload)
+		log.Printf("[REQUEST %s] Finished processing QuickNode payload", reqID)
 	case envelope["confirmed"] != nil && envelope["chainId"] != nil:
 		var payload MoralisEvmPayload
 		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			log.Printf("Moralis decode error: %v", err)
+			log.Printf("[REQUEST %s] Failure: Moralis decode error: %v", reqID, err)
 			http.Error(w, "Invalid Moralis JSON", http.StatusBadRequest)
 			return
 		}
+		chainInfo := chainInfoFromMoralisChainId(payload.ChainId)
+		log.Printf("[REQUEST %s] Starting processing: type=moralis chain=%s chainId=%s native=%d erc20=%d", reqID, chainInfo.Chain, payload.ChainId, len(payload.Txs), len(payload.Erc20Transfers))
 		handleMoralisPayload(payload)
+		log.Printf("[REQUEST %s] Finished processing Moralis payload", reqID)
 	case envelope["transactions"] != nil:
 		var payload QuickNodeBtcPayload
 		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			log.Printf("BTC decode error: %v", err)
+			log.Printf("[REQUEST %s] Failure: BTC decode error: %v", reqID, err)
 			http.Error(w, "Invalid BTC JSON", http.StatusBadRequest)
 			return
 		}
+		log.Printf("[REQUEST %s] Starting processing: type=btc count=%d", reqID, len(payload.Transactions))
 		handleBtcPayload(payload)
+		log.Printf("[REQUEST %s] Finished processing BTC payload", reqID)
 	case envelope["matches"] != nil:
 		var payload QuickNodeSolanaPayload
 		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			log.Printf("Solana decode error: %v", err)
+			log.Printf("[REQUEST %s] Failure: Solana decode error: %v", reqID, err)
 			http.Error(w, "Invalid Solana JSON", http.StatusBadRequest)
 			return
 		}
+		log.Printf("[REQUEST %s] Starting processing: type=solana slot=%d matches=%d", reqID, payload.Slot, len(payload.Matches))
 		handleSolanaPayload(payload)
+		log.Printf("[REQUEST %s] Finished processing Solana payload", reqID)
 	default:
 		if envelope["message"] != nil {
 			msg, _ := envelope["message"]
 			msgStr := string(msg)
 			if strings.Contains(msgStr, "PING") {
-				log.Printf("Pong")
+				log.Printf("[REQUEST %s] Pong", reqID)
 				return
 			}
 
 		}
-		log.Printf("Unsupported payload shape")
+		log.Printf("[REQUEST %s] Failure: unsupported payload shape", reqID)
 		http.Error(w, "Unsupported payload", http.StatusBadRequest)
 		return
 	}
 
+	log.Printf("[REQUEST %s] Success. Duration=%s", reqID, time.Since(start))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Received"))
 }
@@ -794,10 +818,8 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 						DoNothing: true,
 					}).Create(&dbTx)
 
-					if result.Error != nil {
-						log.Printf("[SOLANA] DB Error for %s: %v", wa.Address, result.Error)
-					} else {
-						log.Printf("[SOLANA] Saved Tx for %s", wa.Address)
+					logTxHistoryResult("SOLANA", "sol_transaction_histories", wa.Address, "solana", dbTx.Signature, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+					if result.Error == nil {
 						triggerNotification(NotificationParams{
 							Address:   walletAddr,
 							Chain:     "solana",
@@ -913,10 +935,8 @@ func processTronTransaction(tx Transfer) {
 				DoNothing: true,
 			}).Create(&dbTx)
 
-			if result.Error != nil {
-				log.Printf("[TRON] DB Error for %s: %v", wa.Address, result.Error)
-			} else {
-				log.Printf("[TRON] Saved Tx for %s", wa.Address)
+			logTxHistoryResult("TRON", "tron_transaction_histories", wa.Address, "tron", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			if result.Error == nil {
 				triggerNotification(NotificationParams{
 					Address:   walletHex,
 					Chain:     "tron",
@@ -1018,6 +1038,23 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
 				Direction:        direction,
 				CreatedAt:        time.Now(),
 			}
+
+			if dbTx.TokenName == "" && tx.Contract == "" {
+				if chainInfo.Chain == "BASE" {
+					dbTx.TokenName = "Base"
+					dbTx.TokenSymbol = "ETH"
+				} else if chainInfo.Chain == "ETH" {
+					dbTx.TokenName = "Ethereum"
+					dbTx.TokenSymbol = "ETH"
+				} else if chainInfo.Chain == "POL" {
+					dbTx.TokenName = "Polygon"
+					dbTx.TokenSymbol = "MATIC"
+				} else if chainInfo.Chain == "BSC" {
+					dbTx.TokenName = "Binance Smart Chain"
+					dbTx.TokenSymbol = "BNB"
+				}
+			}
+
 			if chainInfo.Chain == "ETH" {
 				dbTx.ChainId = 1
 				dbTx.ChainName = "Ethereum"
@@ -1037,10 +1074,8 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
 				DoNothing: true,
 			}).Create(&dbTx)
 
-			if result.Error != nil {
-				log.Printf("[EVM] DB Error for %s: %v", wa.Address, result.Error)
-			} else {
-				log.Printf("[EVM] Saved Tx for %s", wa.Address)
+			logTxHistoryResult("EVM", "evm_transaction_histories", wa.Address, chainInfo.Chain, dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			if result.Error == nil {
 				triggerNotification(NotificationParams{
 					Address:   strings.ToLower(walletAddr),
 					Chain:     chainInfo.RedisKey,
@@ -1130,6 +1165,23 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 				ChainId:          parseInt64(chainInfo.Chain), // fallback
 				GasLimit:         parseInt64(tx.Gas),
 			}
+
+			if dbTx.TokenName == "" {
+				if chainInfo.Chain == "BASE" {
+					dbTx.TokenName = "Base"
+					dbTx.TokenSymbol = "ETH"
+				} else if chainInfo.Chain == "ETH" {
+					dbTx.TokenName = "Ethereum"
+					dbTx.TokenSymbol = "ETH"
+				} else if chainInfo.Chain == "POL" {
+					dbTx.TokenName = "Polygon"
+					dbTx.TokenSymbol = "MATIC"
+				} else if chainInfo.Chain == "BSC" {
+					dbTx.TokenName = "Binance Smart Chain"
+					dbTx.TokenSymbol = "BNB"
+				}
+			}
+
 			// If we had more info from chainInfo
 			if chainInfo.Chain == "ETH" {
 				dbTx.ChainId = 1
@@ -1150,10 +1202,8 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 				DoNothing: true,
 			}).Create(&dbTx)
 
-			if result.Error != nil {
-				log.Printf("[MORALIS] DB Error for %s: %v", wa.Address, result.Error)
-			} else {
-				log.Printf("[MORALIS] Saved native tx for %s", wa.Address)
+			logTxHistoryResult("MORALIS", "evm_transaction_histories", wa.Address, chainInfo.Chain, dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			if result.Error == nil {
 				triggerNotification(NotificationParams{
 					Address:   walletAddr,
 					Chain:     chainInfo.Chain,
@@ -1256,6 +1306,7 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 				CreatedAt:        time.Now(),
 				GasLimit:         parseInt64(txRef.Gas),
 			}
+
 			if chainInfo.Chain == "ETH" {
 				dbTx.ChainId = 1
 				dbTx.ChainName = "Ethereum"
@@ -1275,10 +1326,8 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 				DoNothing: true,
 			}).Create(&dbTx)
 
-			if result.Error != nil {
-				log.Printf("[MORALIS] DB Error for %s: %v", wa.Address, result.Error)
-			} else {
-				log.Printf("[MORALIS] Saved ERC20 tx for %s", wa.Address)
+			logTxHistoryResult("MORALIS", "evm_transaction_histories", wa.Address, chainInfo.Chain, dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			if result.Error == nil {
 				triggerNotification(NotificationParams{
 					Address:   walletAddr,
 					Chain:     chainInfo.Chain,
@@ -1414,10 +1463,8 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 				DoNothing: true,
 			}).Create(&dbTx)
 
-			if result.Error != nil {
-				log.Printf("[BTC] DB Error for %s: %v", wa.Address, result.Error)
-			} else {
-				log.Printf("[BTC] Saved tx for %s", wa.Address)
+			logTxHistoryResult("BTC", "btc_transaction_histories", wa.Address, "BTC", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			if result.Error == nil {
 				triggerNotification(NotificationParams{
 					Address:   walletAddr,
 					Chain:     "BTC",
@@ -1494,8 +1541,9 @@ func normalizeAddress(chainID, address string) string {
 	if address == "" {
 		return ""
 	}
-	switch strings.ToLower(chainID) {
-	case "eth", "pol", "base", "bsc":
+	c := strings.ToLower(chainID)
+	switch {
+	case c == "eth" || c == "pol" || c == "base" || c == "bsc" || c == "1" || c == "137" || c == "8453" || c == "56":
 		return strings.ToLower(address)
 	default:
 		return address
@@ -1506,17 +1554,30 @@ func normalizeTokenAddress(chainID, tokenAddress string) string {
 	if tokenAddress == "" {
 		return ""
 	}
-	switch strings.ToLower(chainID) {
-	case "eth", "pol", "base", "bsc":
-		if looksLikeEvmAddress(tokenAddress) {
-			return strings.ToLower(tokenAddress)
+	c := strings.ToLower(strings.TrimSpace(chainID))
+	t := strings.TrimSpace(tokenAddress)
+
+	// Special case for BASE native token. Provider might send "ETH" for BASE.
+	if (c == "base" || c == "8453" || c == "0x2105") && strings.EqualFold(t, "ETH") {
+		return "BASE ETH"
+	}
+
+	switch {
+	case c == "eth" || c == "pol" || c == "base" || c == "bsc" || c == "1" || c == "137" || c == "8453" || c == "56":
+		if looksLikeEvmAddress(t) {
+			return strings.ToLower(t)
 		}
-		if strings.Contains(tokenAddress, " ") {
-			return tokenAddress
+		if strings.Contains(t, " ") {
+			return t
 		}
-		return strings.ToLower(tokenAddress)
+		// Check if it's a native token symbol for other chains to be consistent with nativeTokenAddress
+		officialNative := nativeTokenAddress(c)
+		if strings.EqualFold(t, officialNative) {
+			return officialNative
+		}
+		return strings.ToLower(t)
 	default:
-		return tokenAddress
+		return t
 	}
 }
 
@@ -1597,12 +1658,15 @@ func updateUserBalanceForAddress(chainID, address, tokenAddress, delta string) {
 	}
 
 	for _, wa := range walletAddrs {
-		effectiveToken := strings.ToUpper(tokenAddress)
+		// Use the already normalized tokenAddress if possible
+		effectiveToken := tokenAddress
 		if strings.TrimSpace(effectiveToken) == "" {
 			effectiveToken = nativeTokenAddress(wa.ChainID)
 		} else {
+			// Ensure it's correctly normalized for THIS specific wallet record's chain
 			effectiveToken = normalizeTokenAddress(wa.ChainID, effectiveToken)
 		}
+
 		if err := upsertUserBalance(wa.WalletID, wa.Address, wa.ChainID, effectiveToken, delta); err != nil {
 			log.Printf("[BALANCE] update failed for %s (%s): %v", wa.Address, wa.ChainID, err)
 		}
@@ -1675,6 +1739,17 @@ func contains(slice []string, val string) bool {
 }
 
 func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) error {
+	beforeBalance := "0"
+	var before UserBalance
+	if err := db.Select("balance").Where(
+		"wallet_id = ? AND address = ? AND chain_id = ? AND token_address = ?",
+		walletID, address, chainID, tokenAddress,
+	).First(&before).Error; err == nil {
+		beforeBalance = before.Balance
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("[BALANCE] read-before failed for wallet_id=%s address=%s chain_id=%s token=%s: %v", walletID, address, chainID, tokenAddress, err)
+	}
+
 	now := time.Now()
 	record := UserBalance{
 		WalletID:     walletID,
@@ -1699,11 +1774,37 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 	}).Create(&record)
 
 	if result.Error != nil {
+		log.Printf("[BALANCE] update failed for wallet_id=%s address=%s chain_id=%s token=%s delta=%s error: %v", walletID, address, chainID, tokenAddress, delta, result.Error)
 		return result.Error
 	}
 
+	afterBalance := "unknown"
+	var after UserBalance
+	if err := db.Select("balance").Where(
+		"wallet_id = ? AND address = ? AND chain_id = ? AND token_address = ?",
+		walletID, address, chainID, tokenAddress,
+	).First(&after).Error; err == nil {
+		afterBalance = after.Balance
+	} else {
+		log.Printf("[BALANCE] read-after failed for wallet_id=%s address=%s chain_id=%s token=%s: %v", walletID, address, chainID, tokenAddress, err)
+	}
+
+	log.Printf("[BALANCE] updated wallet_id=%s address=%s chain_id=%s token=%s delta=%s before=%s after=%s", walletID, address, chainID, tokenAddress, delta, beforeBalance, afterBalance)
+
 	updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress)
 	return nil
+}
+
+func logTxHistoryResult(tag, table, wallet, chain, txHash, direction, amount string, rowsAffected int64, err error) {
+	if err != nil {
+		log.Printf("[%s] DB Error table=%s wallet=%s chain=%s tx=%s err=%v", tag, table, wallet, chain, txHash, err)
+		return
+	}
+	if rowsAffected > 0 {
+		log.Printf("[%s] DB Inserted table=%s wallet=%s chain=%s tx=%s direction=%s amount=%s", tag, table, wallet, chain, txHash, direction, amount)
+		return
+	}
+	log.Printf("[%s] DB Exists table=%s wallet=%s chain=%s tx=%s direction=%s amount=%s", tag, table, wallet, chain, txHash, direction, amount)
 }
 
 func updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress string) {
