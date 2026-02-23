@@ -2171,6 +2171,7 @@ func triggerNotification(params NotificationParams) {
 		log.Printf("[Notification] DB error looking up wallet for %s: %v", address, err)
 		return
 	}
+	log.Printf("[Notification] Found %d wallet(s) for %s on chain %s", len(walletAddrs), address, chain)
 	if len(walletAddrs) == 0 {
 		log.Printf("[Notification] No wallet found for %s on chain %s", address, chain)
 		return
@@ -2180,6 +2181,7 @@ func triggerNotification(params NotificationParams) {
 	for _, wa := range walletAddrs {
 		var devices []UserWalletDevice
 		db.Where("wallet_id = ?", wa.WalletID).Find(&devices)
+		log.Printf("[Notification] Sending to device %s on chain %s", devices, chain)
 
 		title := "Transaction Detected"
 		body := ""
