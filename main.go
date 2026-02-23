@@ -2164,13 +2164,15 @@ func triggerNotification(params NotificationParams) {
 	}
 
 	// 1. Find the WalletID(s) associated with this address
+	chainID := getChainSynonyms(chain)[0]
 	var walletAddrs []WalletAddress
-	err := db.Where("address = ? AND chain_id = ?", normalizeAddress(chain, address), chain).Find(&walletAddrs).Error
+	err := db.Where("address = ? AND chain_id = ?", normalizeAddress(chain, address), chainID).Find(&walletAddrs).Error
 	if err != nil {
 		log.Printf("[Notification] DB error looking up wallet for %s: %v", address, err)
 		return
 	}
 	if len(walletAddrs) == 0 {
+		log.Printf("[Notification] No wallet found for %s on chain %s", address, chain)
 		return
 	}
 
