@@ -49,8 +49,12 @@ func TestManualPush(t *testing.T) {
 	fmt.Printf("Found Transaction: %s | Amount: %s %s\n", tx.TxHash, tx.Amount, tx.TokenSymbol)
 
 	// 5. HARDCODED DEVICE INFO - REPLACE THESE
-	testDeviceToken := "dIljpRdiTHS_jTIPN1SOHq:APA91bFdc_VGPPN7iR9grO5cuT0n6VPo0geXWzQkZ7a_tgt-FUwa3Y06c7MoJjuPsHnM3xlL5kNmYMgRQy-bQI9jBqswD4dQfKQh605xtmJ2UwqEaX377Gc"
-	testDeviceType := "android" // or "ios"
+	//testDeviceToken := "dIljpRdiTHS_jTIPN1SOHq:APA91bFdc_VGPPN7iR9grO5cuT0n6VPo0geXWzQkZ7a_tgt-FUwa3Y06c7MoJjuPsHnM3xlL5kNmYMgRQy-bQI9jBqswD4dQfKQh605xtmJ2UwqEaX377Gc"
+	//testDeviceToken := "cZ86ZPQRSn-Zh9rfHMqZV6:APA91bHtKNKwhZCEraOSNld6UR4gESZ47MPgrAk7-K8WcE7Ooq6Rc_-fIOWCE-sbFDjOH8GTadYv8LDHqG4npjyohMBP71Oz7wbshDCwJ6PbPvw9y751grU"
+	//testDeviceType := "android" // or "ios"
+
+	testDeviceToken := "9ea7b6973fa5f9a79df6cb1d1f5f90fde5d6be0c914279515cd682ccb8c1d170"
+	testDeviceType := "ios"
 
 	if testDeviceToken == "PASTE_YOUR_DEVICE_TOKEN_HERE" {
 		t.Skip("Please provide a real device token to run this test")
@@ -66,7 +70,7 @@ func TestManualPush(t *testing.T) {
 		"symbol":    tx.TokenSymbol,
 		"chain":     tx.Chain,
 		"direction": tx.Direction,
-		"type":      "manual_test",
+		"type":      "transaction_alert",
 	}
 
 	// 7. Send Push
