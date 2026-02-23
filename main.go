@@ -821,7 +821,7 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 					logTxHistoryResult("SOLANA", "sol_transaction_histories", wa.Address, "solana", dbTx.Signature, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 					if result.Error == nil {
 						triggerNotification(NotificationParams{
-							Address:   walletAddr,
+							Address:   wa.Address,
 							Chain:     "solana",
 							Amount:    dbTx.Amount,
 							Symbol:    dbTx.TokenSymbol,
@@ -938,7 +938,7 @@ func processTronTransaction(tx Transfer) {
 			logTxHistoryResult("TRON", "tron_transaction_histories", wa.Address, "tron", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 			if result.Error == nil {
 				triggerNotification(NotificationParams{
-					Address:   walletHex,
+					Address:   wa.Address,
 					Chain:     "tron",
 					Amount:    dbTx.Amount,
 					Symbol:    dbTx.TokenSymbol,
@@ -1077,7 +1077,7 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
 			logTxHistoryResult("EVM", "evm_transaction_histories", wa.Address, chainInfo.Chain, dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 			if result.Error == nil {
 				triggerNotification(NotificationParams{
-					Address:   strings.ToLower(walletAddr),
+					Address:   wa.Address,
 					Chain:     chainInfo.RedisKey,
 					Amount:    dbTx.Amount,
 					Symbol:    dbTx.TokenSymbol,
@@ -1205,7 +1205,7 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 			logTxHistoryResult("MORALIS", "evm_transaction_histories", wa.Address, chainInfo.Chain, dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 			if result.Error == nil {
 				triggerNotification(NotificationParams{
-					Address:   walletAddr,
+					Address:   wa.Address,
 					Chain:     chainInfo.Chain,
 					Amount:    dbTx.Amount,
 					Symbol:    "native",
@@ -1329,7 +1329,7 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 			logTxHistoryResult("MORALIS", "evm_transaction_histories", wa.Address, chainInfo.Chain, dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 			if result.Error == nil {
 				triggerNotification(NotificationParams{
-					Address:   walletAddr,
+					Address:   wa.Address,
 					Chain:     chainInfo.Chain,
 					Amount:    dbTx.Amount,
 					Symbol:    dbTx.TokenSymbol,
@@ -1466,7 +1466,7 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 			logTxHistoryResult("BTC", "btc_transaction_histories", wa.Address, "BTC", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 			if result.Error == nil {
 				triggerNotification(NotificationParams{
-					Address:   walletAddr,
+					Address:   wa.Address,
 					Chain:     "BTC",
 					Amount:    dbTx.Amount,
 					Symbol:    "BTC",
