@@ -1643,6 +1643,9 @@ func updateUserBalanceForAddress(chainID, address, tokenAddress, delta string) {
 		return
 	}
 	delta = strings.TrimSpace(delta)
+	chainID = strings.TrimSpace(chainID)
+	address = strings.TrimSpace(address)
+	tokenAddress = strings.TrimSpace(tokenAddress)
 	if address == "" || delta == "" || delta == "0" {
 		return
 	}
@@ -1667,7 +1670,7 @@ func updateUserBalanceForAddress(chainID, address, tokenAddress, delta string) {
 			effectiveToken = normalizeTokenAddress(wa.ChainID, effectiveToken)
 		}
 
-		if err := upsertUserBalance(wa.WalletID, wa.Address, wa.ChainID, effectiveToken, delta); err != nil {
+		if err := upsertUserBalance(strings.TrimSpace(wa.WalletID), normalizeAddress(wa.ChainID, wa.Address), strings.TrimSpace(wa.ChainID), effectiveToken, delta); err != nil {
 			log.Printf("[BALANCE] update failed for %s (%s): %v", wa.Address, wa.ChainID, err)
 		}
 	}
@@ -1690,7 +1693,7 @@ func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 	for _, chain := range chainCandidates {
 		for _, addr := range addrCandidates {
 			var rows []WalletAddress
-			if err := db.Where("chain_id = ? AND (address = ? OR address_hex = ?)", chain, addr, addr).Find(&rows).Error; err != nil {
+			if err := db.Where("LOWER(chain_id) = LOWER(?) AND (LOWER(address) = LOWER(?) OR LOWER(address_hex) = LOWER(?))", chain, addr, addr).Find(&rows).Error; err != nil {
 				return nil, err
 			}
 			if len(rows) > 0 {
@@ -1739,10 +1742,17 @@ func contains(slice []string, val string) bool {
 }
 
 func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) error {
+	// Normalize all keys for case-insensitive DB operations
+	walletID = strings.TrimSpace(walletID)
+	chainID = strings.TrimSpace(chainID)
+	address = normalizeAddress(chainID, strings.TrimSpace(address))
+	tokenAddress = normalizeTokenAddress(chainID, strings.TrimSpace(tokenAddress))
+	delta = strings.TrimSpace(delta)
+
 	beforeBalance := "0"
 	var before UserBalance
 	if err := db.Select("balance").Where(
-		"wallet_id = ? AND address = ? AND chain_id = ? AND token_address = ?",
+		"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
 		walletID, address, chainID, tokenAddress,
 	).First(&before).Error; err == nil {
 		beforeBalance = before.Balance
@@ -1781,7 +1791,7 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 	afterBalance := "unknown"
 	var after UserBalance
 	if err := db.Select("balance").Where(
-		"wallet_id = ? AND address = ? AND chain_id = ? AND token_address = ?",
+		"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
 		walletID, address, chainID, tokenAddress,
 	).First(&after).Error; err == nil {
 		afterBalance = after.Balance
@@ -1824,7 +1834,7 @@ func updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress str
 
 	var updated UserBalance
 	if err := db.Select("balance").Where(
-		"wallet_id = ? AND address = ? AND chain_id = ? AND token_address = ?",
+		"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
 		walletID, address, chainID, tokenAddress,
 	).First(&updated).Error; err != nil {
 		log.Printf("[BALANCE] db read failed for %s (%s): %v", address, chainID, err)
