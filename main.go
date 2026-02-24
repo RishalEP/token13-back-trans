@@ -533,69 +533,86 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
 	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
 
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
-		log.Printf("[REQUEST %s] Failure: JSON decode error: %v", reqID, err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
+	var payloads [][]byte
+	bodyTrimmed := strings.TrimSpace(string(bodyBytes))
+	if strings.HasPrefix(bodyTrimmed, "[") {
+		var rawMessages []json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &rawMessages); err != nil {
+			log.Printf("[REQUEST %s] Failure: JSON decode error (array): %v", reqID, err)
+			http.Error(w, "Invalid JSON array", http.StatusBadRequest)
+			return
+		}
+		for _, msg := range rawMessages {
+			payloads = append(payloads, []byte(msg))
+		}
+	} else {
+		payloads = append(payloads, bodyBytes)
 	}
 
-	switch {
-	case envelope["metadata"] != nil && envelope["transfers"] != nil:
-		var payload QuickNodePayload
-		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			log.Printf("[REQUEST %s] Failure: QuickNode decode error: %v", reqID, err)
-			http.Error(w, "Invalid QuickNode JSON", http.StatusBadRequest)
+	for i, currentPayload := range payloads {
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(currentPayload, &envelope); err != nil {
+			log.Printf("[REQUEST %s] Failure: JSON decode error (item %d): %v", reqID, i, err)
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
-		chainInfo := chainInfoFromQuickNodeNetwork(payload.Metadata.Network)
-		log.Printf("[REQUEST %s] Starting processing: type=quicknode chain=%s network=%s transfers=%d", reqID, chainInfo.Chain, payload.Metadata.Network, len(payload.Transfers))
-		handleQuickNodePayload(payload)
-		log.Printf("[REQUEST %s] Finished processing QuickNode payload", reqID)
-	case envelope["confirmed"] != nil && envelope["chainId"] != nil:
-		var payload MoralisEvmPayload
-		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			log.Printf("[REQUEST %s] Failure: Moralis decode error: %v", reqID, err)
-			http.Error(w, "Invalid Moralis JSON", http.StatusBadRequest)
-			return
-		}
-		chainInfo := chainInfoFromMoralisChainId(payload.ChainId)
-		log.Printf("[REQUEST %s] Starting processing: type=moralis chain=%s chainId=%s native=%d erc20=%d", reqID, chainInfo.Chain, payload.ChainId, len(payload.Txs), len(payload.Erc20Transfers))
-		handleMoralisPayload(payload)
-		log.Printf("[REQUEST %s] Finished processing Moralis payload", reqID)
-	case envelope["transactions"] != nil:
-		var payload QuickNodeBtcPayload
-		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			log.Printf("[REQUEST %s] Failure: BTC decode error: %v", reqID, err)
-			http.Error(w, "Invalid BTC JSON", http.StatusBadRequest)
-			return
-		}
-		log.Printf("[REQUEST %s] Starting processing: type=btc count=%d", reqID, len(payload.Transactions))
-		handleBtcPayload(payload)
-		log.Printf("[REQUEST %s] Finished processing BTC payload", reqID)
-	case envelope["matches"] != nil:
-		var payload QuickNodeSolanaPayload
-		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			log.Printf("[REQUEST %s] Failure: Solana decode error: %v", reqID, err)
-			http.Error(w, "Invalid Solana JSON", http.StatusBadRequest)
-			return
-		}
-		log.Printf("[REQUEST %s] Starting processing: type=solana slot=%d matches=%d", reqID, payload.Slot, len(payload.Matches))
-		handleSolanaPayload(payload)
-		log.Printf("[REQUEST %s] Finished processing Solana payload", reqID)
-	default:
-		if envelope["message"] != nil {
-			msg, _ := envelope["message"]
-			msgStr := string(msg)
-			if strings.Contains(msgStr, "PING") {
-				log.Printf("[REQUEST %s] Pong", reqID)
+
+		switch {
+		case envelope["metadata"] != nil && envelope["transfers"] != nil:
+			var payload QuickNodePayload
+			if err := json.Unmarshal(currentPayload, &payload); err != nil {
+				log.Printf("[REQUEST %s] Failure: QuickNode decode error (item %d): %v", reqID, i, err)
+				http.Error(w, "Invalid QuickNode JSON", http.StatusBadRequest)
 				return
 			}
-
+			chainInfo := chainInfoFromQuickNodeNetwork(payload.Metadata.Network)
+			log.Printf("[REQUEST %s] Starting processing (item %d): type=quicknode chain=%s network=%s transfers=%d", reqID, i, chainInfo.Chain, payload.Metadata.Network, len(payload.Transfers))
+			handleQuickNodePayload(payload)
+			log.Printf("[REQUEST %s] Finished processing QuickNode payload (item %d)", reqID, i)
+		case envelope["confirmed"] != nil && envelope["chainId"] != nil:
+			var payload MoralisEvmPayload
+			if err := json.Unmarshal(currentPayload, &payload); err != nil {
+				log.Printf("[REQUEST %s] Failure: Moralis decode error (item %d): %v", reqID, i, err)
+				http.Error(w, "Invalid Moralis JSON", http.StatusBadRequest)
+				return
+			}
+			chainInfo := chainInfoFromMoralisChainId(payload.ChainId)
+			log.Printf("[REQUEST %s] Starting processing (item %d): type=moralis chain=%s chainId=%s native=%d erc20=%d", reqID, i, chainInfo.Chain, payload.ChainId, len(payload.Txs), len(payload.Erc20Transfers))
+			handleMoralisPayload(payload)
+			log.Printf("[REQUEST %s] Finished processing Moralis payload (item %d)", reqID, i)
+		case envelope["transactions"] != nil:
+			var payload QuickNodeBtcPayload
+			if err := json.Unmarshal(currentPayload, &payload); err != nil {
+				log.Printf("[REQUEST %s] Failure: BTC decode error (item %d): %v", reqID, i, err)
+				http.Error(w, "Invalid BTC JSON", http.StatusBadRequest)
+				return
+			}
+			log.Printf("[REQUEST %s] Starting processing (item %d): type=btc count=%d", reqID, i, len(payload.Transactions))
+			handleBtcPayload(payload)
+			log.Printf("[REQUEST %s] Finished processing BTC payload (item %d)", reqID, i)
+		case envelope["matches"] != nil:
+			var payload QuickNodeSolanaPayload
+			if err := json.Unmarshal(currentPayload, &payload); err != nil {
+				log.Printf("[REQUEST %s] Failure: Solana decode error (item %d): %v", reqID, i, err)
+				http.Error(w, "Invalid Solana JSON", http.StatusBadRequest)
+				return
+			}
+			log.Printf("[REQUEST %s] Starting processing (item %d): type=solana slot=%d matches=%d", reqID, i, payload.Slot, len(payload.Matches))
+			handleSolanaPayload(payload)
+			log.Printf("[REQUEST %s] Finished processing Solana payload (item %d)", reqID, i)
+		default:
+			if envelope["message"] != nil {
+				msg, _ := envelope["message"]
+				msgStr := string(msg)
+				if strings.Contains(msgStr, "PING") {
+					log.Printf("[REQUEST %s] Pong (item %d)", reqID, i)
+					continue
+				}
+			}
+			log.Printf("[REQUEST %s] Failure: unsupported payload shape (item %d)", reqID, i)
+			http.Error(w, "Unsupported payload", http.StatusBadRequest)
+			return
 		}
-		log.Printf("[REQUEST %s] Failure: unsupported payload shape", reqID)
-		http.Error(w, "Unsupported payload", http.StatusBadRequest)
-		return
 	}
 
 	log.Printf("[REQUEST %s] Success. Duration=%s", reqID, time.Since(start))
@@ -854,12 +871,24 @@ func processTronTransaction(tx Transfer) {
 	// 1. Format Address (HEX -> Base58)
 	fromBase58, _ := HexToTronAddress(tx.From)
 	toBase58, _ := HexToTronAddress(tx.To)
+	txHash := strings.TrimPrefix(tx.TxHash, "0x")
+
+	var contractBase58 string
+	if tx.Contract != "" {
+		contractBase58, _ = HexToTronAddress(tx.Contract)
+	}
 
 	if fromBase58 != "" {
 		tx.From = fromBase58
 	}
 	if toBase58 != "" {
 		tx.To = toBase58
+	}
+	if txHash != "" {
+		tx.TxHash = txHash
+	}
+	if contractBase58 != "" {
+		tx.Contract = contractBase58
 	}
 
 	// We loop through the Base58 addresses
