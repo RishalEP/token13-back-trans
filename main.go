@@ -869,14 +869,11 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 // ---------------------------------------------------------
 func processTronTransaction(tx Transfer) {
 	// 1. Format Address (HEX -> Base58)
-	fromBase58, _ := HexToTronAddress(tx.From)
-	toBase58, _ := HexToTronAddress(tx.To)
+	fromBase58 := normalizeTronAddress(tx.From)
+	toBase58 := normalizeTronAddress(tx.To)
 	txHash := strings.TrimPrefix(tx.TxHash, "0x")
 
-	var contractBase58 string
-	if tx.Contract != "" {
-		contractBase58, _ = HexToTronAddress(tx.Contract)
-	}
+	contractBase58 := normalizeTronAddress(tx.Contract)
 
 	if fromBase58 != "" {
 		tx.From = fromBase58
@@ -1572,6 +1569,8 @@ func normalizeAddress(chainID, address string) string {
 	}
 	c := strings.ToLower(chainID)
 	switch {
+	case c == "tron" || c == "tron-mainnet" || c == "trx" || c == "65":
+		return normalizeTronAddress(address)
 	case c == "eth" || c == "pol" || c == "base" || c == "bsc" || c == "1" || c == "137" || c == "8453" || c == "56":
 		return strings.ToLower(address)
 	default:
@@ -1592,6 +1591,11 @@ func normalizeTokenAddress(chainID, tokenAddress string) string {
 	}
 
 	switch {
+	case c == "tron" || c == "tron-mainnet" || c == "trx" || c == "65":
+		if strings.EqualFold(t, nativeTokenAddress("tron")) {
+			return nativeTokenAddress("tron")
+		}
+		return normalizeTronAddress(t)
 	case c == "eth" || c == "pol" || c == "base" || c == "bsc" || c == "1" || c == "137" || c == "8453" || c == "56":
 		if looksLikeEvmAddress(t) {
 			return strings.ToLower(t)
@@ -1642,6 +1646,27 @@ func negateAmount(amount string) string {
 		return amount
 	}
 	return "-" + amount
+}
+
+func isNegativeDecimalString(value string) bool {
+	v := strings.TrimSpace(value)
+	return strings.HasPrefix(v, "-")
+}
+
+func normalizeTronAddress(address string) string {
+	trimmed := strings.TrimSpace(address)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "T") {
+		return trimmed
+	}
+	hexPart := trimmed
+	base58, err := HexToTronAddress(hexPart)
+	if err != nil || base58 == "" {
+		return trimmed
+	}
+	return base58
 }
 
 func updateUserBalancesForTransfer(chainID, fromAddr, toAddr, tokenAddress, amountStr string) {
@@ -1777,6 +1802,10 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 	address = normalizeAddress(chainID, strings.TrimSpace(address))
 	tokenAddress = normalizeTokenAddress(chainID, strings.TrimSpace(tokenAddress))
 	delta = strings.TrimSpace(delta)
+	insertBalance := delta
+	if isNegativeDecimalString(delta) {
+		insertBalance = "0"
+	}
 
 	beforeBalance := "0"
 	var before UserBalance
@@ -1795,7 +1824,7 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 		Address:      address,
 		ChainID:      chainID,
 		TokenAddress: tokenAddress,
-		Balance:      delta,
+		Balance:      insertBalance,
 		LastActive:   now,
 	}
 
@@ -1807,7 +1836,7 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 			{Name: "token_address"},
 		},
 		DoUpdates: clause.Assignments(map[string]interface{}{
-			"balance":     gorm.Expr("balance + ?", delta),
+			"balance":     gorm.Expr("GREATEST(balance + ?, 0)", delta),
 			"last_active": now,
 		}),
 	}).Create(&record)
