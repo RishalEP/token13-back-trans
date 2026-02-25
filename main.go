@@ -325,9 +325,9 @@ type SolAccountKey struct {
 }
 
 type SolInstruction struct {
-	ProgramId string     `json:"programId"`
-	Program   string     `json:"program,omitempty"`
-	Parsed    *SolParsed `json:"parsed,omitempty"`
+	ProgramId string          `json:"programId"`
+	Program   string          `json:"program,omitempty"`
+	Parsed    json.RawMessage `json:"parsed,omitempty"`
 }
 
 type SolParsed struct {
@@ -407,6 +407,9 @@ func main() {
 	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	http.HandleFunc("/migration/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 
 	// Manual notification trigger endpoint
 	http.HandleFunc("/send-notification", func(w http.ResponseWriter, r *http.Request) {
@@ -441,7 +444,7 @@ func initDatabase() {
 	DbUrl := os.Getenv("DATABASE_URL")
 	if DbUrl == "" {
 		// Replace with your actual local string if needed
-		DbUrl = "root:@tcp(127.0.0.1:3306)/token13_app_new?parseTime=True"
+		DbUrl = "root:@tcp(127.0.0.1:3306)/token13_feb?parseTime=True"
 		log.Printf("DATABASE_URL not set, using default: %s", DbUrl)
 	}
 
@@ -721,6 +724,33 @@ func handleSolanaPayload(payload QuickNodeSolanaPayload) {
 	}
 }
 
+func parseSolParsed(raw json.RawMessage) (SolParsed, bool) {
+	if len(raw) == 0 {
+		return SolParsed{}, false
+	}
+
+	var parsed SolParsed
+	if err := json.Unmarshal(raw, &parsed); err == nil {
+		return parsed, true
+	}
+
+	// Some QuickNode payloads send parsed as a JSON string; try decoding it.
+	var parsedStr string
+	if err := json.Unmarshal(raw, &parsedStr); err != nil {
+		return SolParsed{}, false
+	}
+
+	parsedStr = strings.TrimSpace(parsedStr)
+	if parsedStr == "" || !strings.HasPrefix(parsedStr, "{") {
+		return SolParsed{}, false
+	}
+
+	if err := json.Unmarshal([]byte(parsedStr), &parsed); err != nil {
+		return SolParsed{}, false
+	}
+	return parsed, true
+}
+
 func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 	signature := ""
 	if len(match.Transaction.Signatures) > 0 {
@@ -734,12 +764,17 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 
 	for _, inst := range match.Transaction.Message.Instructions {
 		// Only process transfers for now
-		if inst.Parsed == nil {
+		if len(inst.Parsed) == 0 {
 			continue
 		}
 
-		if inst.Parsed.Type == "transfer" || inst.Parsed.Type == "transferChecked" {
-			info := inst.Parsed.Info
+		parsed, ok := parseSolParsed(inst.Parsed)
+		if !ok {
+			continue
+		}
+
+		if parsed.Type == "transfer" || parsed.Type == "transferChecked" {
+			info := parsed.Info
 			from := info.Source
 			to := info.Destination
 
