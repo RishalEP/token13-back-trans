@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout code
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -32,8 +32,10 @@ jobs:
           echo "HOST_PORT=8741" >> "$GITHUB_ENV"
           echo "VM_USER=${{ secrets.VM_USER_DEV }}" >> "$GITHUB_ENV"
           echo "VM_HOST=${{ secrets.VM_HOST_DEV }}" >> "$GITHUB_ENV"
+          echo "APNS_P8_KEY=${{ secrets.APNS_P8_KEY_DEV }}" >> "$GITHUB_ENV"
+          echo "FCM_CREDENTIALS_JSON=${{ secrets.FCM_CREDENTIALS_JSON_DEV }}" >> "$GITHUB_ENV"
 
-      # 4️⃣ Parse back-trans EC2 secrets into env file
+      # 4️⃣ Parse secrets JSON to env file
       - name: Parse back-trans EC2 secrets
         run: |
           echo '${{ secrets.EC2_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
@@ -47,18 +49,11 @@ jobs:
             --build-arg BUILD_TARGET=${BUILD_TARGET} \
             -t $IMAGE_NAME .
 
-      # 6️⃣ Deploy back-trans on EC2 with proper secrets files
+      # 6️⃣ Deploy Docker container on EC2
       - name: Deploy back-trans on EC2
         run: |
-          # Create secrets files on EC2
-          ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
-            mkdir -p /tmp/back-trans-secrets
-            echo '${{ secrets.APNS_P8_KEY_DEV }}' | sed 's/\\n/\n/g' > /tmp/back-trans-secrets/apns.p8
-            echo '${{ secrets.FCM_CREDENTIALS_JSON_DEV }}' > /tmp/back-trans-secrets/firebase.json
-          "
-
-          # Transfer env file
-          scp -o StrictHostKeyChecking=no back-trans.env $VM_USER@$VM_HOST:/tmp/back-trans-secrets/back-trans.env
+          # Copy secrets env file to remote
+          scp -o StrictHostKeyChecking=no back-trans.env $VM_USER@$VM_HOST:/tmp/back-trans.env
 
           # Transfer Docker image and run container
           docker save $IMAGE_NAME | ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
@@ -69,8 +64,87 @@ jobs:
               -p $HOST_PORT:$CONTAINER_PORT \
               --restart always \
               --network app_network \
-              -v /tmp/back-trans-secrets/apns.p8:/app/secrets/apns.p8:ro \
-              -v /tmp/back-trans-secrets/firebase.json:/app/secrets/firebase.json:ro \
-              --env-file /tmp/back-trans-secrets/back-trans.env \
+              -e APNS_P8_KEY='$APNS_P8_KEY' \
+              -e FCM_CREDENTIALS_JSON='$FCM_CREDENTIALS_JSON' \
+              --env-file /tmp/back-trans.env \
               $IMAGE_NAME
           "
+
+
+
+# name: Back-trans CI/CD deploy to EC2 dev
+
+# on:
+#   push:
+#     branches:
+#       - backup-dev
+#   workflow_dispatch:
+
+# jobs:
+#   deploy:
+#     name: Deploy Back-trans to EC2
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       # 1️⃣ Checkout code
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       # 2️⃣ Start SSH agent
+#       - name: Start ssh-agent
+#         uses: webfactory/ssh-agent@v0.9.0
+#         with:
+#           ssh-private-key: ${{ secrets.SSH_EXP_DEV_PRIVATE_KEY }}
+
+#       # 3️⃣ Set environment variables
+#       - name: Set environment variables
+#         run: |
+#           echo "BUILD_TARGET=back-trans" >> "$GITHUB_ENV"
+#           echo "IMAGE_NAME=back-trans-dev:latest" >> "$GITHUB_ENV"
+#           echo "CONTAINER_NAME=back-trans-dev" >> "$GITHUB_ENV"
+#           echo "CONTAINER_PORT=8080" >> "$GITHUB_ENV"
+#           echo "HOST_PORT=8741" >> "$GITHUB_ENV"
+#           echo "VM_USER=${{ secrets.VM_USER_DEV }}" >> "$GITHUB_ENV"
+#           echo "VM_HOST=${{ secrets.VM_HOST_DEV }}" >> "$GITHUB_ENV"
+
+#       # 4️⃣ Parse back-trans EC2 secrets into env file
+#       - name: Parse back-trans EC2 secrets
+#         run: |
+#           echo '${{ secrets.EC2_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
+#           jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans.env
+#           rm -f back-trans.json
+
+#       # 5️⃣ Build Docker image
+#       - name: Build Docker image
+#         run: |
+#           docker build \
+#             --build-arg BUILD_TARGET=${BUILD_TARGET} \
+#             -t $IMAGE_NAME .
+
+#       # 6️⃣ Deploy back-trans on EC2 with proper secrets files
+#       - name: Deploy back-trans on EC2
+#         run: |
+#           # Create secrets files on EC2
+#           ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
+#             mkdir -p /tmp/back-trans-secrets
+#             echo '${{ secrets.APNS_P8_KEY_DEV }}' | sed 's/\\n/\n/g' > /tmp/back-trans-secrets/apns.p8
+#             echo '${{ secrets.FCM_CREDENTIALS_JSON_DEV }}' > /tmp/back-trans-secrets/firebase.json
+#           "
+
+#           # Transfer env file
+#           scp -o StrictHostKeyChecking=no back-trans.env $VM_USER@$VM_HOST:/tmp/back-trans-secrets/back-trans.env
+
+#           # Transfer Docker image and run container
+#           docker save $IMAGE_NAME | ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
+#             docker load
+#             docker stop $CONTAINER_NAME || true
+#             docker rm $CONTAINER_NAME || true
+#             docker run -d --name $CONTAINER_NAME \
+#               -p $HOST_PORT:$CONTAINER_PORT \
+#               --restart always \
+#               --network app_network \
+#               -v /tmp/back-trans-secrets/apns.p8:/app/secrets/apns.p8:ro \
+#               -v /tmp/back-trans-secrets/firebase.json:/app/secrets/firebase.json:ro \
+#               --env-file /tmp/back-trans-secrets/back-trans.env \
+#               $IMAGE_NAME
+#           "
