@@ -53,20 +53,40 @@ jobs:
 
       - name: Deploy back-trans on EC2
         run: |
-          docker save $IMAGE_NAME | \
-          ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
-            docker load && \
-            docker stop $CONTAINER_NAME || true && \
-            docker rm $CONTAINER_NAME || true && \
+          # Transfer env file
+          scp -o StrictHostKeyChecking=no back-trans.env $VM_USER@$VM_HOST:/tmp/back-trans.env
+
+          # Transfer Docker image and run container
+          docker save $IMAGE_NAME | ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
+            docker load
+            docker stop $CONTAINER_NAME || true
+            docker rm $CONTAINER_NAME || true
             docker run -d --name $CONTAINER_NAME \
               -p $HOST_PORT:$CONTAINER_PORT \
               --restart always \
               --network app_network \
               -e APNS_P8_KEY='$APNS_P8_KEY' \
               -e FCM_CREDENTIALS_JSON='$FCM_CREDENTIALS_JSON' \
-              --env-file <(cat << 'EOF'
-                $(cat back-trans.env)
-            EOF
-              ) \
+              --env-file /tmp/back-trans.env \
               $IMAGE_NAME
-          "    
+          "
+      
+      # - name: Deploy back-trans on EC2
+      #   run: |
+      #     docker save $IMAGE_NAME | \
+      #     ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
+      #       docker load && \
+      #       docker stop $CONTAINER_NAME || true && \
+      #       docker rm $CONTAINER_NAME || true && \
+      #       docker run -d --name $CONTAINER_NAME \
+      #         -p $HOST_PORT:$CONTAINER_PORT \
+      #         --restart always \
+      #         --network app_network \
+      #         -e APNS_P8_KEY='$APNS_P8_KEY' \
+      #         -e FCM_CREDENTIALS_JSON='$FCM_CREDENTIALS_JSON' \
+      #         --env-file <(cat << 'EOF'
+      #           $(cat back-trans.env)
+      #       EOF
+      #         ) \
+      #         $IMAGE_NAME
+      #     "    
