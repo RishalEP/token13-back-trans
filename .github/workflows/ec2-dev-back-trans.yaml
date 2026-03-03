@@ -35,10 +35,15 @@ jobs:
           echo "VM_HOST=${{ secrets.VM_HOST_DEV }}" >> "$GITHUB_ENV"
 
           # App secrets (same as earlier, now direct env)
-          echo "DATABASE_URL=${{ secrets.DATABASE_URL_DEV }}" >> "$GITHUB_ENV"
           echo "APNS_P8_KEY=${{ secrets.APNS_P8_KEY_DEV }}" >> "$GITHUB_ENV"
           echo "FCM_CREDENTIALS_JSON=${{ secrets.FCM_CREDENTIALS_JSON_DEV }}" >> "$GITHUB_ENV"
 
+      - name: Parse back-trans EC2 secrets
+        run: |
+          echo '${{ secrets.EC2_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
+          jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans.env
+          rm -f back-trans.json
+      
       # 4️⃣ Build Docker image
       - name: Build Docker image
         run: |
@@ -46,8 +51,7 @@ jobs:
             --build-arg BUILD_TARGET=${BUILD_TARGET} \
             -t $IMAGE_NAME .
 
-      # 5️⃣ Deploy to EC2 (same as dapps / proxy / price)
-      - name: Deploy container on EC2
+      - name: Deploy back-trans on EC2
         run: |
           docker save $IMAGE_NAME | \
           ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
@@ -56,10 +60,13 @@ jobs:
             docker rm $CONTAINER_NAME || true && \
             docker run -d --name $CONTAINER_NAME \
               -p $HOST_PORT:$CONTAINER_PORT \
-              --network app_network \
               --restart always \
-              -e DATABASE_URL='$DATABASE_URL' \
+              --network app_network \
               -e APNS_P8_KEY='$APNS_P8_KEY' \
               -e FCM_CREDENTIALS_JSON='$FCM_CREDENTIALS_JSON' \
+              --env-file <(cat << 'EOF'
+                $(cat back-trans.env)
+            EOF
+              ) \
               $IMAGE_NAME
-          "
+          "    
