@@ -305,8 +305,10 @@ type SolMatch struct {
 }
 
 type SolMeta struct {
-	Err interface{} `json:"err"`
-	Fee int64       `json:"fee"`
+	Err          interface{} `json:"err"`
+	Fee          int64       `json:"fee"`
+	PreBalances  []int64     `json:"preBalances"`
+	PostBalances []int64     `json:"postBalances"`
 }
 
 type SolTransaction struct {
@@ -444,7 +446,8 @@ func initDatabase() {
 	DbUrl := os.Getenv("DATABASE_URL")
 	if DbUrl == "" {
 		// Replace with your actual local string if needed
-		DbUrl = "root:@tcp(127.0.0.1:3306)/token13_feb?parseTime=True"
+		DbUrl = "token13:token132026@tcp(43.204.164.104:3306)/token13_app?charset=utf8mb4&parseTime=True"
+		//DbUrl = "root:@tcp(127.0.0.1:3306)/token13_feb?parseTime=True"
 		log.Printf("DATABASE_URL not set, using default: %s", DbUrl)
 	}
 
@@ -891,10 +894,24 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 			if insertedAny {
 				tokenAddr := inst.ProgramId
 				if inst.Program == "system" {
-					tokenAddr = nativeTokenAddress("solana")
+					// Native SOL balance change is handled via pre/post balances below
+					// We only process it here for transaction history records
+				} else {
+					tokenAddr = normalizeTokenAddress("solana", tokenAddr)
+					updateUserBalancesForTransfer("solana", from, to, tokenAddr, amountStr)
 				}
-				updateUserBalancesForTransfer("solana", from, to, tokenAddr, amountStr)
 			}
+		}
+	}
+
+	// Native SOL Balance Adjustment using Pre/Post Balances (Includes fees, rent, and transfers)
+	for i, acc := range match.Transaction.Message.AccountKeys {
+		if i >= len(match.Meta.PreBalances) || i >= len(match.Meta.PostBalances) {
+			continue
+		}
+		diff := match.Meta.PostBalances[i] - match.Meta.PreBalances[i]
+		if diff != 0 {
+			updateUserBalanceForAddress("solana", acc.Pubkey, nativeTokenAddress("solana"), formatTokenAmount(big.NewInt(diff), 9))
 		}
 	}
 }
@@ -1022,6 +1039,11 @@ func processTronTransaction(tx Transfer) {
 			tokenAddress = normalizeTokenAddress("tron", tokenAddress)
 		}
 		updateUserBalancesForTransfer("tron", tx.From, tx.To, tokenAddress, amountStr)
+
+		// Deduct gas fees for Tron (TRX)
+		if tx.CostInTrx != "" && tx.CostInTrx != "0" {
+			updateUserBalanceForAddress("tron", tx.From, nativeTokenAddress("tron"), negateAmount(tx.CostInTrx))
+		}
 	}
 }
 
@@ -1161,6 +1183,11 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
 			tokenAddress = normalizeTokenAddress(chainInfo.RedisKey, tokenAddress)
 		}
 		updateUserBalancesForTransfer(chainInfo.RedisKey, tx.From, tx.To, tokenAddress, amountStr)
+
+		// Deduct gas fees
+		if feeNativeStr != "" && feeNativeStr != "0" {
+			updateUserBalanceForAddress(chainInfo.RedisKey, tx.From, nativeTokenAddress(chainInfo.RedisKey), negateAmount(feeNativeStr))
+		}
 	}
 }
 
@@ -1284,6 +1311,11 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 	if insertedAny {
 		tokenAddress := nativeTokenAddress(chainInfo.RedisKey)
 		updateUserBalancesForTransfer(chainInfo.RedisKey, tx.FromAddress, tx.ToAddress, tokenAddress, amountStr)
+
+		// Deduct gas fees
+		if feeNativeStr != "" && feeNativeStr != "0" {
+			updateUserBalanceForAddress(chainInfo.RedisKey, tx.FromAddress, tokenAddress, negateAmount(feeNativeStr))
+		}
 	}
 }
 
@@ -1411,6 +1443,11 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 			tokenAddress = nativeTokenAddress(chainInfo.RedisKey)
 		}
 		updateUserBalancesForTransfer(chainInfo.RedisKey, transfer.From, transfer.To, tokenAddress, amountStr)
+
+		// Deduct gas fees (native token) from sender
+		if feeNativeStr != "" && feeNativeStr != "0" {
+			updateUserBalanceForAddress(chainInfo.RedisKey, transfer.From, nativeTokenAddress(chainInfo.RedisKey), negateAmount(feeNativeStr))
+		}
 	}
 }
 
