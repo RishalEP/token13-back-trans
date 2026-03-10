@@ -9,7 +9,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:me-central-1:568838100446:certificate/2f66ae3e-2a75-4056-8b9b-31fd1e54d53e
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:568838100446:certificate/e5dac3a4-467b-486f-bcd1-616120f9e31b
     alb.ingress.kubernetes.io/backend-protocol: HTTP
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600
     alb.ingress.kubernetes.io/target-group-name: back-trans-tg-dev
