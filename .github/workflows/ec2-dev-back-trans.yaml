@@ -28,7 +28,7 @@ jobs:
           echo "BUILD_TARGET=back-trans" >> "$GITHUB_ENV"
           echo "IMAGE_NAME=back-trans-dev:latest" >> "$GITHUB_ENV"
           echo "CONTAINER_NAME=back-trans-dev" >> "$GITHUB_ENV"
-          echo "CONTAINER_PORT=8080" >> "$GITHUB_ENV"
+          echo "CONTAINER_PORT=8800" >> "$GITHUB_ENV"
           echo "HOST_PORT=8741" >> "$GITHUB_ENV"
           echo "VM_USER=${{ secrets.VM_USER_DEV }}" >> "$GITHUB_ENV"
           echo "VM_HOST=${{ secrets.VM_HOST_DEV }}" >> "$GITHUB_ENV"
