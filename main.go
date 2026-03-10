@@ -1447,19 +1447,27 @@ func processTronTransaction(tx Transfer) {
 				direction = "contract"
 			}
 
+			walletAddress := normalizeTronAddressForStorage(wa.Address)
+			if walletAddress == "" {
+				continue
+			}
+			fromAddress := normalizeTronAddressForStorage(tx.From)
+			toAddress := normalizeTronAddressForStorage(tx.To)
+			contractAddress := normalizeTronAddressForStorage(tx.Contract)
+
 			dbTx := WalletTransactionHistory{
-				WalletAddress:   wa.Address,
+				WalletAddress:   walletAddress,
 				TxHash:          tx.TxHash,
 				Chain:           "tron",
 				BlockNumber:     int64(tx.BlockNumber),
 				BlockTime:       tx.BlockTime,
-				FromAddress:     tx.From,
-				ToAddress:       tx.To,
+				FromAddress:     fromAddress,
+				ToAddress:       toAddress,
 				Amount:          amountStr,
 				Status:          "success",
 				TransactionType: classifyTronTxType(tx),
 				Standard:        tx.Standard,
-				ContractAddress: tx.Contract,
+				ContractAddress: contractAddress,
 				TokenName:       tx.TokenName,
 				TokenSymbol:     tx.TokenSymbol,
 				TokenDecimal:    uint8(decimals),
@@ -1476,17 +1484,17 @@ func processTronTransaction(tx Transfer) {
 				DoNothing: true,
 			}).Create(&dbTx)
 
-			logTxHistoryResult("TRON", "tron_transaction_histories", wa.Address, "tron", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			logTxHistoryResult("TRON", "tron_transaction_histories", walletAddress, "tron", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 			if result.Error == nil {
 				triggerNotification(NotificationParams{
-					Address:   wa.Address,
+					Address:   walletAddress,
 					Chain:     "tron",
 					Amount:    dbTx.Amount,
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 				})
-				updateRedis(wa.Address, "tron", dbTx)
+				updateRedis(walletAddress, "tron", dbTx)
 				if result.RowsAffected > 0 {
 					insertedAny = true
 				}
@@ -2327,6 +2335,37 @@ func normalizeTronAddress(address string) string {
 	return base58
 }
 
+func looksLikeTronHex41Address(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "0x") || strings.HasPrefix(trimmed, "0X") {
+		trimmed = trimmed[2:]
+	}
+	if len(trimmed) != 42 {
+		return false
+	}
+	if !(trimmed[0] == '4' && trimmed[1] == '1') {
+		return false
+	}
+	for _, r := range trimmed {
+		if !isHexChar(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeTronAddressForStorage(address string) string {
+	normalized := strings.TrimSpace(normalizeTronAddress(address))
+	if normalized == "" {
+		return ""
+	}
+	// Prevent hex-like values from being persisted into Tron history fields.
+	if strings.HasPrefix(strings.ToLower(normalized), "0x") || looksLikeEvmAddress(normalized) || looksLikeTronHex41Address(normalized) {
+		return ""
+	}
+	return normalized
+}
+
 func updateUserBalancesForTransfer(chainID, fromAddr, toAddr, tokenAddress, amountStr string) {
 	amountStr = strings.TrimSpace(amountStr)
 	if amountStr == "" || amountStr == "0" {
@@ -2621,10 +2660,22 @@ func sha256d(data []byte) []byte {
 }
 
 func HexToTronAddress(hexAddr string) (string, error) {
+	hexAddr = strings.TrimSpace(hexAddr)
 	hexAddr = strings.TrimPrefix(hexAddr, "0x")
+	hexAddr = strings.TrimPrefix(hexAddr, "0X")
+
 	addrBytes, err := hex.DecodeString(hexAddr)
 	if err != nil {
 		return "", err
+	}
+
+	// Some providers send TRON addresses as 21-byte hex with 0x41 prefix.
+	// Convert both 20-byte (EVM-style) and 21-byte TRON-prefixed formats.
+	if len(addrBytes) == 21 {
+		if addrBytes[0] != 0x41 {
+			return "", fmt.Errorf("invalid tron address prefix byte: 0x%x", addrBytes[0])
+		}
+		addrBytes = addrBytes[1:]
 	}
 	if len(addrBytes) != 20 {
 		return "", fmt.Errorf("invalid address length: got %d bytes", len(addrBytes))
