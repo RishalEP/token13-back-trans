@@ -496,7 +496,7 @@ func main() {
 	})
 
 	log.Println("Backtrans Service Listening on :8800")
-	log.Fatal(http.ListenAndServe(":8802", nil))
+	log.Fatal(http.ListenAndServe(":8800", nil))
 }
 
 func initDatabase() {
