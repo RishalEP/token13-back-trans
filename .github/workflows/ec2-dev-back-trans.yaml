@@ -32,15 +32,19 @@ jobs:
           echo "HOST_PORT=8741" >> "$GITHUB_ENV"
           echo "VM_USER=${{ secrets.VM_USER_DEV }}" >> "$GITHUB_ENV"
           echo "VM_HOST=${{ secrets.VM_HOST_DEV }}" >> "$GITHUB_ENV"
-          echo "APNS_P8_KEY=${{ secrets.APNS_P8_KEY_DEV }}" >> "$GITHUB_ENV"
-          echo "FCM_CREDENTIALS_JSON=${{ secrets.FCM_CREDENTIALS_JSON_DEV }}" >> "$GITHUB_ENV"
-
+          
       # 4️⃣ Parse EC2 secrets JSON to env file
       - name: Parse back-trans EC2 secrets
         run: |
           echo '${{ secrets.EC2_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
           jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans.env
-          rm -f back-trans.json
+          shred -u back-trans.json
+
+      # 5️⃣ Prepare APNs and FCM credential files
+      - name: Prepare APNs and FCM files
+        run: |
+          echo '${{ secrets.APNS_P8_KEY_DEV }}' | sed 's/\\n/\n/g' | tr -d '\r' > apns.p8
+          echo '${{ secrets.FCM_CREDENTIALS_JSON_DEV }}' > firebase.json
 
       # 5️⃣ Build Docker image
       - name: Build Docker image
@@ -49,22 +53,21 @@ jobs:
             --build-arg BUILD_TARGET=${BUILD_TARGET} \
             -t $IMAGE_NAME .
 
-      # 6️⃣ Deploy Docker container on EC2 with APNs & FCM files
+      #  6️⃣ Copy files to EC2
+      - name: Copy secrets and credential files to EC2
+        run: |
+          scp -o StrictHostKeyChecking=no back-trans.env $VM_USER@$VM_HOST:/tmp/back-trans.env
+          scp -o StrictHostKeyChecking=no apns.p8 $VM_USER@$VM_HOST:/tmp/apns.p8
+          scp -o StrictHostKeyChecking=no firebase.json $VM_USER@$VM_HOST:/tmp/firebase.json
+          shred -u apns.p8 firebase.json back-trans.env
+
+      # 8️⃣ Deploy Docker container on EC2
       - name: Deploy back-trans on EC2
         run: |
-          # Copy env file to remote host
-          scp -o StrictHostKeyChecking=no back-trans.env $VM_USER@$VM_HOST:/tmp/back-trans.env
-
-          # Transfer Docker image and run container
           docker save $IMAGE_NAME | ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "
-            docker load
-            docker stop $CONTAINER_NAME || true
-            docker rm $CONTAINER_NAME || true
-
-            # Create APNs and FCM files on host
-            echo '$APNS_P8_KEY' | sed 's/\\n/\n/g' | tr -d '\r' > /tmp/apns.p8
-            echo '$FCM_CREDENTIALS_JSON' > /tmp/firebase.json
-
+            docker load && \
+            docker stop $CONTAINER_NAME || true && \
+            docker rm $CONTAINER_NAME || true && \
             docker run -d --name $CONTAINER_NAME \
               -p $HOST_PORT:$CONTAINER_PORT \
               --restart always \
