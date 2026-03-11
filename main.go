@@ -37,6 +37,32 @@ var (
 	nativePriceCacheTTL = 60 * time.Second
 )
 
+const (
+	txTypeDefaultTransfer          = "SMART_CONTRACT_INTERACTION"
+	txTypeSmartContractInteraction = "SMART_CONTRACT_INTERACTION"
+	txTypeNativeTransfer           = "NATIVE_TRANSFER"
+	txTypeTokenTransfer            = "TOKEN_TRANSFER"
+	txTypeNftTransfer              = "NFT_TRANSFER"
+	txTypeSwap                     = "SWAP"
+	txTypeApproval                 = "APPROVAL"
+)
+
+var (
+	evmApprovalEventTopicPrefix = "0x8c5be1e5"
+	evmSwapEventV2Topic         = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"
+	evmSwapEventV3Topic         = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+	evmTransferEventTopic       = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+	erc1155TransferSinglePrefix = "0xc3d58168"
+	erc1155TransferBatchPrefix  = "0x4a39dc06"
+	erc20TransferMethodID       = "0xa9059cbb"
+	solanaMetaplexProgramID     = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+
+	evmApprovalMethodSelectors = map[string]struct{}{
+		"0x095ea7b3": {}, // approve(address,uint256)
+		"0xa22cb465": {}, // setApprovalForAll(address,bool)
+	}
+)
+
 // ---------------------------------------------------------
 // 1. DATABASE MODELS (UNCHANGED)
 // ---------------------------------------------------------
@@ -224,14 +250,19 @@ type Metadata struct {
 // Transfer Struct - Matches the JS snake_case output
 type Transfer struct {
 	// Common Fields
-	BlockNumber int    `json:"block_number"`
-	BlockTime   int64  `json:"block_time"`
-	From        string `json:"from_address"`
-	To          string `json:"to_address"`
-	Standard    string `json:"standard"`
-	TxHash      string `json:"tx_hash"`
-	Value       string `json:"token_amount"`
-	Contract    string `json:"contract_address"`
+	BlockNumber     int    `json:"block_number"`
+	BlockTime       int64  `json:"block_time"`
+	From            string `json:"from_address"`
+	To              string `json:"to_address"`
+	Standard        string `json:"standard"`
+	TxHash          string `json:"tx_hash"`
+	Value           string `json:"token_amount"`
+	Contract        string `json:"contract_address"`
+	TransactionType string `json:"transaction_type,omitempty"`
+	MethodId        string `json:"method_id,omitempty"`
+	TxFrom          string `json:"tx_from,omitempty"`
+	TxTo            string `json:"tx_to,omitempty"`
+	TxInput         string `json:"tx_input,omitempty"`
 
 	// TRON Specific (Mapped from JS snake_case)
 	NetUsage   int64  `json:"net_usage,omitempty"` // Maps to BandwidthUsed
@@ -250,11 +281,16 @@ type Transfer struct {
 
 // Moralis EVM payload (ETH, POL, BASE, BSC)
 type MoralisEvmPayload struct {
-	Confirmed      bool                   `json:"confirmed"`
-	ChainId        string                 `json:"chainId"`
-	Block          MoralisBlock           `json:"block"`
-	Txs            []MoralisTx            `json:"txs"`
-	Erc20Transfers []MoralisErc20Transfer `json:"erc20Transfers"`
+	Confirmed         bool                   `json:"confirmed"`
+	ChainId           string                 `json:"chainId"`
+	Block             MoralisBlock           `json:"block"`
+	Txs               []MoralisTx            `json:"txs"`
+	Logs              []MoralisLog           `json:"logs"`
+	TxsInternal       []MoralisInternalTx    `json:"txsInternal"`
+	Erc20Transfers    []MoralisErc20Transfer `json:"erc20Transfers"`
+	Erc20Approvals    []MoralisErc20Approval `json:"erc20Approvals"`
+	NftApprovals      MoralisNftApprovals    `json:"nftApprovals"`
+	NftTokenApprovals []MoralisApprovalEvent `json:"nftTokenApprovals"`
 }
 
 type MoralisBlock struct {
@@ -272,6 +308,42 @@ type MoralisTx struct {
 	GasPrice       string `json:"gasPrice"`
 	ReceiptGasUsed string `json:"receiptGasUsed"`
 	Input          string `json:"input"`
+}
+
+type MoralisInternalTx struct {
+	From            string `json:"from"`
+	To              string `json:"to"`
+	Value           string `json:"value"`
+	TransactionHash string `json:"transactionHash"`
+}
+
+type MoralisLog struct {
+	TransactionHash string `json:"transactionHash"`
+	Address         string `json:"address"`
+	Topic0          string `json:"topic0"`
+	Topic1          string `json:"topic1"`
+	Topic2          string `json:"topic2"`
+	Topic3          string `json:"topic3"`
+}
+
+type MoralisApprovalEvent struct {
+	TransactionHash string `json:"transactionHash"`
+}
+
+type MoralisErc20Approval struct {
+	TransactionHash string `json:"transactionHash"`
+	Contract        string `json:"contract"`
+	Owner           string `json:"owner"`
+	Spender         string `json:"spender"`
+	Value           string `json:"value"`
+	TokenName       string `json:"tokenName,omitempty"`
+	TokenSymbol     string `json:"tokenSymbol,omitempty"`
+	TokenDecimals   string `json:"tokenDecimals,omitempty"`
+}
+
+type MoralisNftApprovals struct {
+	ERC721  []MoralisApprovalEvent `json:"ERC721"`
+	ERC1155 []MoralisApprovalEvent `json:"ERC1155"`
 }
 
 type MoralisErc20Transfer struct {
@@ -305,8 +377,12 @@ type SolMatch struct {
 }
 
 type SolMeta struct {
-	Err interface{} `json:"err"`
-	Fee int64       `json:"fee"`
+	Err               interface{}       `json:"err"`
+	Fee               int64             `json:"fee"`
+	PreBalances       []int64           `json:"preBalances"`
+	PostBalances      []int64           `json:"postBalances"`
+	PreTokenBalances  []SolTokenBalance `json:"preTokenBalances"`
+	PostTokenBalances []SolTokenBalance `json:"postTokenBalances"`
 }
 
 type SolTransaction struct {
@@ -338,6 +414,7 @@ type SolParsed struct {
 type SolParsedInfo struct {
 	Destination string          `json:"destination"`
 	Source      string          `json:"source"`
+	Delegate    string          `json:"delegate"`
 	Lamports    interface{}     `json:"lamports"` // Can be string or number
 	Amount      interface{}     `json:"amount"`   // For SPL tokens
 	TokenAmount *SolTokenAmount `json:"tokenAmount"`
@@ -348,6 +425,13 @@ type SolTokenAmount struct {
 	Amount         string `json:"amount"`
 	Decimals       uint8  `json:"decimals"`
 	UiAmountString string `json:"uiAmountString"`
+}
+
+type SolTokenBalance struct {
+	AccountIndex  int            `json:"accountIndex"`
+	Mint          string         `json:"mint"`
+	Owner         string         `json:"owner"`
+	UiTokenAmount SolTokenAmount `json:"uiTokenAmount"`
 }
 
 type BtcBlock struct {
@@ -444,7 +528,8 @@ func initDatabase() {
 	DbUrl := os.Getenv("DATABASE_URL")
 	if DbUrl == "" {
 		// Replace with your actual local string if needed
-		DbUrl = "root:@tcp(127.0.0.1:3306)/token13_feb?parseTime=True"
+		DbUrl = "token13:token132026@tcp(43.204.164.104:3306)/token13_app?charset=utf8mb4&parseTime=True"
+		//DbUrl = "root:@tcp(127.0.0.1:3306)/token13_feb?parseTime=True"
 		log.Printf("DATABASE_URL not set, using default: %s", DbUrl)
 	}
 
@@ -676,12 +761,19 @@ func handleQuickNodePayload(payload QuickNodePayload) {
 		chainFamily = "eth"
 	}
 	chainInfo := chainInfoFromQuickNodeNetwork(network)
+	tronTxTypeByHash := map[string]string{}
+	evmTxTypeByHash := map[string]string{}
+	if chainFamily == "tron" {
+		tronTxTypeByHash = classifyQuickNodeTronTxTypes(payload.Transfers)
+	} else {
+		evmTxTypeByHash = classifyQuickNodeEvmTxTypes(payload.Transfers)
+	}
 
 	for _, tx := range payload.Transfers {
 		if chainFamily == "tron" {
-			processTronTransaction(tx)
+			processTronTransaction(tx, tronTxTypeByHash)
 		} else {
-			processEvmTransaction(tx, chainInfo)
+			processEvmTransaction(tx, chainInfo, evmTxTypeByHash)
 		}
 	}
 }
@@ -700,13 +792,18 @@ func handleMoralisPayload(payload MoralisEvmPayload) {
 		}
 		txMap[strings.ToLower(tx.Hash)] = tx
 	}
+	txTypeByHash := classifyMoralisTxTypes(payload, chainInfo)
 
 	for _, tx := range payload.Txs {
-		processMoralisNativeTx(tx, chainInfo, blockNumber, blockTime)
+		processMoralisNativeTx(tx, chainInfo, blockNumber, blockTime, txTypeByHash)
+	}
+
+	for _, approval := range payload.Erc20Approvals {
+		processMoralisErc20Approval(approval, txMap, chainInfo, blockNumber, blockTime, txTypeByHash)
 	}
 
 	for _, transfer := range payload.Erc20Transfers {
-		processMoralisErc20Transfer(transfer, txMap, chainInfo, blockNumber, blockTime)
+		processMoralisErc20Transfer(transfer, txMap, chainInfo, blockNumber, blockTime, txTypeByHash)
 	}
 }
 
@@ -751,6 +848,816 @@ func parseSolParsed(raw json.RawMessage) (SolParsed, bool) {
 	return parsed, true
 }
 
+func normalizeMethodID(methodID string) string {
+	m := strings.ToLower(strings.TrimSpace(methodID))
+	if m == "" {
+		return ""
+	}
+	if !strings.HasPrefix(m, "0x") {
+		m = "0x" + m
+	}
+	if len(m) >= 10 {
+		return m[:10]
+	}
+	return m
+}
+
+func methodIDFromInput(input string) string {
+	in := strings.ToLower(strings.TrimSpace(input))
+	if in == "" || in == "0x" {
+		return ""
+	}
+	if !strings.HasPrefix(in, "0x") {
+		in = "0x" + in
+	}
+	if len(in) < 10 {
+		return ""
+	}
+	return in[:10]
+}
+
+func parseTxTypeHint(raw string) string {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	if v == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(v, "approve"), strings.Contains(v, "approval"):
+		return txTypeApproval
+	case strings.Contains(v, "swap"):
+		return txTypeSwap
+	case strings.Contains(v, "nft") && strings.Contains(v, "transfer"):
+		return txTypeNftTransfer
+	case strings.Contains(v, "token") && strings.Contains(v, "transfer"):
+		return txTypeTokenTransfer
+	case strings.Contains(v, "native") && strings.Contains(v, "transfer"):
+		return txTypeNativeTransfer
+	case strings.Contains(v, "smart") && strings.Contains(v, "contract"):
+		return txTypeSmartContractInteraction
+	case v == "transfer":
+		return txTypeDefaultTransfer
+	default:
+		return ""
+	}
+}
+
+func isTokenStandard(standard string) bool {
+	s := strings.ToLower(strings.TrimSpace(standard))
+	return strings.Contains(s, "erc20") || strings.Contains(s, "trc20") || strings.Contains(s, "spl")
+}
+
+func isNftStandard(standard string) bool {
+	s := strings.ToLower(strings.TrimSpace(standard))
+	return strings.Contains(s, "erc721") || strings.Contains(s, "erc1155") || strings.Contains(s, "trc721") || strings.Contains(s, "trc1155") || strings.Contains(s, "nft")
+}
+
+func isEvmApprovalMethod(methodID string) bool {
+	_, ok := evmApprovalMethodSelectors[normalizeMethodID(methodID)]
+	return ok
+}
+
+func isEvmApprovalEventTopic(topic0 string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(topic0)), evmApprovalEventTopicPrefix)
+}
+
+func isEvmSwapEventTopic(topic0 string) bool {
+	topic := strings.ToLower(strings.TrimSpace(topic0))
+	return topic == evmSwapEventV2Topic || topic == evmSwapEventV3Topic
+}
+
+func isErc721TransferLog(logItem MoralisLog) bool {
+	topic0 := strings.ToLower(strings.TrimSpace(logItem.Topic0))
+	if topic0 != evmTransferEventTopic {
+		return false
+	}
+	return strings.TrimSpace(logItem.Topic1) != "" && strings.TrimSpace(logItem.Topic2) != "" && strings.TrimSpace(logItem.Topic3) != ""
+}
+
+func isErc1155TransferLog(topic0 string) bool {
+	topic := strings.ToLower(strings.TrimSpace(topic0))
+	return strings.HasPrefix(topic, erc1155TransferSinglePrefix) || strings.HasPrefix(topic, erc1155TransferBatchPrefix)
+}
+
+func isInputEmpty(txInput string) bool {
+	in := strings.ToLower(strings.TrimSpace(txInput))
+	return in == "" || in == "0x"
+}
+
+func transferMethodID(tx Transfer) string {
+	if method := normalizeMethodID(tx.MethodId); method != "" {
+		return method
+	}
+	return methodIDFromInput(tx.TxInput)
+}
+
+func isApprovalInput(input string) bool {
+	return isEvmApprovalMethod(methodIDFromInput(input))
+}
+
+func isTransferApproval(tx Transfer) bool {
+	return isEvmApprovalMethod(transferMethodID(tx))
+}
+
+func isContractInteractionFromInput(input string) bool {
+	methodID := methodIDFromInput(input)
+	return methodID != "" && methodID != erc20TransferMethodID
+}
+
+func addBigIntDelta(deltaByAsset map[string]*big.Int, asset string, delta *big.Int) {
+	if delta == nil || delta.Sign() == 0 {
+		return
+	}
+	key := strings.ToLower(strings.TrimSpace(asset))
+	if key == "" {
+		return
+	}
+	if existing, ok := deltaByAsset[key]; ok {
+		existing.Add(existing, delta)
+		return
+	}
+	deltaByAsset[key] = new(big.Int).Set(delta)
+}
+
+func hasOnePositiveAndOneNegativeDelta(deltaByAsset map[string]*big.Int) bool {
+	negatives := 0
+	positives := 0
+	for _, delta := range deltaByAsset {
+		if delta == nil || delta.Sign() == 0 {
+			continue
+		}
+		if delta.Sign() < 0 {
+			negatives++
+		} else if delta.Sign() > 0 {
+			positives++
+		}
+		if negatives > 1 || positives > 1 {
+			return false
+		}
+	}
+	return negatives == 1 && positives == 1
+}
+
+type quickNodeTxSummary struct {
+	hasApproval       bool
+	hasSwapHint       bool
+	hasNftTransfer    bool
+	hasTokenTransfer  bool
+	hasNativeTransfer bool
+	hasEmptyInput     bool
+	hasContractInput  bool
+	sender            string
+	deltaByAsset      map[string]*big.Int
+}
+
+func ensureQuickNodeTxSummary(summaryByHash map[string]*quickNodeTxSummary, hash, sender string) *quickNodeTxSummary {
+	summary := summaryByHash[hash]
+	if summary == nil {
+		summary = &quickNodeTxSummary{
+			sender:       sender,
+			deltaByAsset: map[string]*big.Int{},
+		}
+		summaryByHash[hash] = summary
+	} else if summary.sender == "" && sender != "" {
+		summary.sender = sender
+	}
+	return summary
+}
+
+func classifyQuickNodeSummary(summary *quickNodeTxSummary) string {
+	if summary == nil {
+		return txTypeSmartContractInteraction
+	}
+	if summary.hasApproval {
+		return txTypeApproval
+	}
+	if summary.hasSwapHint || hasOnePositiveAndOneNegativeDelta(summary.deltaByAsset) {
+		return txTypeSwap
+	}
+	if summary.hasNftTransfer {
+		return txTypeNftTransfer
+	}
+	if summary.hasTokenTransfer {
+		return txTypeTokenTransfer
+	}
+	if summary.hasNativeTransfer && summary.hasEmptyInput && !summary.hasContractInput {
+		return txTypeNativeTransfer
+	}
+	return txTypeSmartContractInteraction
+}
+
+func classifyQuickNodeTronTxTypes(transfers []Transfer) map[string]string {
+	summaryByHash := make(map[string]*quickNodeTxSummary)
+	const nativeAssetKey = "__native__"
+
+	for _, tx := range transfers {
+		hash := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(tx.TxHash)), "0x")
+		if hash == "" {
+			continue
+		}
+		sender := tx.TxFrom
+		if strings.TrimSpace(sender) == "" {
+			sender = tx.From
+		}
+		summary := ensureQuickNodeTxSummary(summaryByHash, hash, normalizeAddressForFlow("tron", sender))
+		methodID := transferMethodID(tx)
+
+		hint := parseTxTypeHint(tx.TransactionType)
+		if hint == txTypeApproval || isEvmApprovalMethod(methodID) {
+			summary.hasApproval = true
+		}
+		if hint == txTypeSwap {
+			summary.hasSwapHint = true
+		}
+		if hint == txTypeNftTransfer || isNftStandard(tx.Standard) {
+			summary.hasNftTransfer = true
+		}
+
+		if isInputEmpty(tx.TxInput) && methodID == "" {
+			summary.hasEmptyInput = true
+		} else {
+			summary.hasContractInput = true
+		}
+
+		value := parseBigInt(tx.Value)
+		if value.Sign() <= 0 {
+			continue
+		}
+
+		isNft := isNftStandard(tx.Standard)
+		isToken := !isNft && (strings.TrimSpace(tx.Contract) != "" || isTokenStandard(tx.Standard))
+		isNative := !isNft && !isToken
+		if isNft {
+			summary.hasNftTransfer = true
+		}
+		if isToken {
+			summary.hasTokenTransfer = true
+		}
+		if isNative {
+			summary.hasNativeTransfer = true
+		}
+
+		from := normalizeAddressForFlow("tron", tx.From)
+		to := normalizeAddressForFlow("tron", tx.To)
+		if summary.sender != "" && !isNft {
+			asset := nativeAssetKey
+			if isToken {
+				asset = strings.ToLower(strings.TrimSpace(tx.Contract))
+				if asset == "" {
+					asset = strings.ToLower(strings.TrimSpace(tx.Standard))
+				}
+			}
+			if strings.EqualFold(from, summary.sender) {
+				addBigIntDelta(summary.deltaByAsset, asset, new(big.Int).Neg(new(big.Int).Set(value)))
+			}
+			if strings.EqualFold(to, summary.sender) {
+				addBigIntDelta(summary.deltaByAsset, asset, value)
+			}
+		}
+	}
+
+	txTypeByHash := make(map[string]string, len(summaryByHash))
+	for hash, summary := range summaryByHash {
+		txTypeByHash[hash] = classifyQuickNodeSummary(summary)
+	}
+
+	return txTypeByHash
+}
+
+func classifyQuickNodeEvmTxTypes(transfers []Transfer) map[string]string {
+	summaryByHash := make(map[string]*quickNodeTxSummary)
+	const nativeAssetKey = "__native__"
+
+	for _, tx := range transfers {
+		hash := strings.ToLower(strings.TrimSpace(tx.TxHash))
+		if hash == "" {
+			continue
+		}
+		sender := tx.TxFrom
+		if strings.TrimSpace(sender) == "" {
+			sender = tx.From
+		}
+		summary := ensureQuickNodeTxSummary(summaryByHash, hash, normalizeAddressForFlow("evm", sender))
+		methodID := transferMethodID(tx)
+
+		hint := parseTxTypeHint(tx.TransactionType)
+		if hint == txTypeApproval || isEvmApprovalMethod(methodID) {
+			summary.hasApproval = true
+		}
+		if hint == txTypeSwap {
+			summary.hasSwapHint = true
+		}
+		if hint == txTypeNftTransfer || isNftStandard(tx.Standard) {
+			summary.hasNftTransfer = true
+		}
+
+		if isInputEmpty(tx.TxInput) && methodID == "" {
+			summary.hasEmptyInput = true
+		} else {
+			summary.hasContractInput = true
+		}
+
+		value := parseBigInt(tx.Value)
+		if value.Sign() <= 0 {
+			continue
+		}
+
+		isNft := isNftStandard(tx.Standard)
+		isToken := !isNft && (strings.TrimSpace(tx.Contract) != "" || isTokenStandard(tx.Standard))
+		isNative := !isNft && !isToken
+		if isNft {
+			summary.hasNftTransfer = true
+		}
+		if isToken {
+			summary.hasTokenTransfer = true
+		}
+		if isNative {
+			summary.hasNativeTransfer = true
+		}
+
+		from := normalizeAddressForFlow("evm", tx.From)
+		to := normalizeAddressForFlow("evm", tx.To)
+		if summary.sender != "" && !isNft {
+			asset := nativeAssetKey
+			if isToken {
+				asset = strings.ToLower(strings.TrimSpace(tx.Contract))
+				if asset == "" {
+					asset = strings.ToLower(strings.TrimSpace(tx.Standard))
+				}
+			}
+			if strings.EqualFold(from, summary.sender) {
+				addBigIntDelta(summary.deltaByAsset, asset, new(big.Int).Neg(new(big.Int).Set(value)))
+			}
+			if strings.EqualFold(to, summary.sender) {
+				addBigIntDelta(summary.deltaByAsset, asset, value)
+			}
+		}
+	}
+
+	txTypeByHash := make(map[string]string, len(summaryByHash))
+	for hash, summary := range summaryByHash {
+		txTypeByHash[hash] = classifyQuickNodeSummary(summary)
+	}
+	return txTypeByHash
+}
+
+func classifyTronTxType(tx Transfer) string {
+	hinted := parseTxTypeHint(tx.TransactionType)
+	if hinted == txTypeApproval {
+		return txTypeApproval
+	}
+	if isTransferApproval(tx) {
+		return txTypeApproval
+	}
+	if hinted == txTypeSwap {
+		return txTypeSwap
+	}
+	if hinted == txTypeNftTransfer || isNftStandard(tx.Standard) {
+		return txTypeNftTransfer
+	}
+	if hinted == txTypeTokenTransfer {
+		return txTypeTokenTransfer
+	}
+	if strings.TrimSpace(tx.Contract) != "" || isTokenStandard(tx.Standard) {
+		return txTypeTokenTransfer
+	}
+	if hinted == txTypeNativeTransfer {
+		return txTypeNativeTransfer
+	}
+	if parseBigInt(tx.Value).Sign() > 0 && isInputEmpty(tx.TxInput) && transferMethodID(tx) == "" {
+		return txTypeNativeTransfer
+	}
+	return txTypeSmartContractInteraction
+}
+
+func classifyQuickNodeEvmTxType(tx Transfer) string {
+	hinted := parseTxTypeHint(tx.TransactionType)
+	if hinted == txTypeApproval {
+		return txTypeApproval
+	}
+	if isTransferApproval(tx) {
+		return txTypeApproval
+	}
+	if hinted == txTypeSwap {
+		return txTypeSwap
+	}
+	if hinted == txTypeNftTransfer || isNftStandard(tx.Standard) {
+		return txTypeNftTransfer
+	}
+	if hinted == txTypeTokenTransfer {
+		return txTypeTokenTransfer
+	}
+	if strings.TrimSpace(tx.Contract) != "" || isTokenStandard(tx.Standard) {
+		return txTypeTokenTransfer
+	}
+	if hinted == txTypeNativeTransfer {
+		return txTypeNativeTransfer
+	}
+	if parseBigInt(tx.Value).Sign() > 0 && isInputEmpty(tx.TxInput) && transferMethodID(tx) == "" {
+		return txTypeNativeTransfer
+	}
+	return txTypeSmartContractInteraction
+}
+
+type moralisTxSummary struct {
+	hasApproval       bool
+	hasNftTransfer    bool
+	hasTokenTransfer  bool
+	hasNativeTransfer bool
+	hasEmptyInput     bool
+	hasContractInput  bool
+	sender            string
+	deltaByAsset      map[string]*big.Int
+}
+
+func ensureMoralisTxSummary(summaryByHash map[string]*moralisTxSummary, hash string) *moralisTxSummary {
+	summary := summaryByHash[hash]
+	if summary == nil {
+		summary = &moralisTxSummary{
+			deltaByAsset: map[string]*big.Int{},
+		}
+		summaryByHash[hash] = summary
+	}
+	return summary
+}
+
+func classifyMoralisTxTypes(payload MoralisEvmPayload, _ evmChainInfo) map[string]string {
+	summaryByHash := make(map[string]*moralisTxSummary)
+	const nativeAssetKey = "__native__"
+
+	for _, tx := range payload.Txs {
+		hash := strings.ToLower(strings.TrimSpace(tx.Hash))
+		if hash == "" {
+			continue
+		}
+		summary := ensureMoralisTxSummary(summaryByHash, hash)
+		summary.sender = strings.ToLower(strings.TrimSpace(tx.FromAddress))
+		if isApprovalInput(tx.Input) {
+			summary.hasApproval = true
+		}
+		if isInputEmpty(tx.Input) {
+			summary.hasEmptyInput = true
+		} else {
+			summary.hasContractInput = true
+		}
+		value := parseBigInt(tx.Value)
+		if value.Sign() > 0 {
+			summary.hasNativeTransfer = true
+			if summary.sender != "" {
+				addBigIntDelta(summary.deltaByAsset, nativeAssetKey, new(big.Int).Neg(new(big.Int).Set(value)))
+			}
+		}
+	}
+
+	for _, logItem := range payload.Logs {
+		hash := strings.ToLower(strings.TrimSpace(logItem.TransactionHash))
+		if hash == "" {
+			continue
+		}
+		summary := ensureMoralisTxSummary(summaryByHash, hash)
+		if isEvmApprovalEventTopic(logItem.Topic0) {
+			summary.hasApproval = true
+		}
+		if isErc721TransferLog(logItem) || isErc1155TransferLog(logItem.Topic0) {
+			summary.hasNftTransfer = true
+		}
+	}
+
+	for _, transfer := range payload.Erc20Transfers {
+		hash := strings.ToLower(strings.TrimSpace(transfer.TransactionHash))
+		if hash == "" {
+			continue
+		}
+		value := parseBigInt(transfer.Value)
+		if value.Sign() <= 0 {
+			continue
+		}
+		summary := ensureMoralisTxSummary(summaryByHash, hash)
+		summary.hasTokenTransfer = true
+		if summary.sender == "" {
+			continue
+		}
+		asset := strings.ToLower(strings.TrimSpace(transfer.Contract))
+		if asset == "" {
+			asset = strings.ToLower(strings.TrimSpace(transfer.TokenSymbol))
+		}
+		if strings.EqualFold(strings.TrimSpace(transfer.From), summary.sender) {
+			addBigIntDelta(summary.deltaByAsset, asset, new(big.Int).Neg(new(big.Int).Set(value)))
+		}
+		if strings.EqualFold(strings.TrimSpace(transfer.To), summary.sender) {
+			addBigIntDelta(summary.deltaByAsset, asset, value)
+		}
+	}
+
+	for _, internalTx := range payload.TxsInternal {
+		hash := strings.ToLower(strings.TrimSpace(internalTx.TransactionHash))
+		if hash == "" {
+			continue
+		}
+		value := parseBigInt(internalTx.Value)
+		if value.Sign() <= 0 {
+			continue
+		}
+		summary := ensureMoralisTxSummary(summaryByHash, hash)
+		summary.hasNativeTransfer = true
+		if summary.sender == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(internalTx.From), summary.sender) {
+			addBigIntDelta(summary.deltaByAsset, nativeAssetKey, new(big.Int).Neg(new(big.Int).Set(value)))
+		}
+		if strings.EqualFold(strings.TrimSpace(internalTx.To), summary.sender) {
+			addBigIntDelta(summary.deltaByAsset, nativeAssetKey, value)
+		}
+	}
+
+	for _, approval := range payload.Erc20Approvals {
+		hash := strings.ToLower(strings.TrimSpace(approval.TransactionHash))
+		if hash != "" {
+			summary := ensureMoralisTxSummary(summaryByHash, hash)
+			summary.hasApproval = true
+		}
+	}
+	for _, approval := range payload.NftTokenApprovals {
+		hash := strings.ToLower(strings.TrimSpace(approval.TransactionHash))
+		if hash != "" {
+			summary := ensureMoralisTxSummary(summaryByHash, hash)
+			summary.hasApproval = true
+		}
+	}
+	for _, approval := range payload.NftApprovals.ERC721 {
+		hash := strings.ToLower(strings.TrimSpace(approval.TransactionHash))
+		if hash != "" {
+			summary := ensureMoralisTxSummary(summaryByHash, hash)
+			summary.hasApproval = true
+		}
+	}
+	for _, approval := range payload.NftApprovals.ERC1155 {
+		hash := strings.ToLower(strings.TrimSpace(approval.TransactionHash))
+		if hash != "" {
+			summary := ensureMoralisTxSummary(summaryByHash, hash)
+			summary.hasApproval = true
+		}
+	}
+
+	txTypeByHash := make(map[string]string, len(summaryByHash))
+	for hash, summary := range summaryByHash {
+		if summary.hasApproval {
+			txTypeByHash[hash] = txTypeApproval
+			continue
+		}
+		if hasOnePositiveAndOneNegativeDelta(summary.deltaByAsset) {
+			txTypeByHash[hash] = txTypeSwap
+			continue
+		}
+		if summary.hasNftTransfer {
+			txTypeByHash[hash] = txTypeNftTransfer
+			continue
+		}
+		if summary.hasTokenTransfer {
+			txTypeByHash[hash] = txTypeTokenTransfer
+			continue
+		}
+		if summary.hasNativeTransfer && summary.hasEmptyInput && !summary.hasContractInput {
+			txTypeByHash[hash] = txTypeNativeTransfer
+			continue
+		}
+		txTypeByHash[hash] = txTypeSmartContractInteraction
+	}
+
+	return txTypeByHash
+}
+
+func classifyMoralisNativeTxType(tx MoralisTx, txTypeByHash map[string]string) string {
+	hash := strings.ToLower(strings.TrimSpace(tx.Hash))
+	if txType, ok := txTypeByHash[hash]; ok && txType != "" {
+		return txType
+	}
+	if isApprovalInput(tx.Input) {
+		return txTypeApproval
+	}
+	if parseBigInt(tx.Value).Sign() > 0 && isInputEmpty(tx.Input) {
+		return txTypeNativeTransfer
+	}
+	return txTypeSmartContractInteraction
+}
+
+func classifyMoralisErc20TxType(transfer MoralisErc20Transfer, txTypeByHash map[string]string) string {
+	hash := strings.ToLower(strings.TrimSpace(transfer.TransactionHash))
+	if txType, ok := txTypeByHash[hash]; ok && txType != "" {
+		return txType
+	}
+	return txTypeTokenTransfer
+}
+
+func classifyMoralisApprovalTxType(approval MoralisErc20Approval, txTypeByHash map[string]string) string {
+	hash := strings.ToLower(strings.TrimSpace(approval.TransactionHash))
+	if txType, ok := txTypeByHash[hash]; ok && txType != "" {
+		return txType
+	}
+	return txTypeApproval
+}
+
+func normalizeAddressForFlow(chainID, address string) string {
+	addr := strings.TrimSpace(address)
+	if addr == "" {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(chainID), "tron") {
+		return normalizeTronAddress(addr)
+	}
+	return strings.ToLower(addr)
+}
+
+func addRatValue(totalByKey map[string]*big.Rat, key string, value *big.Rat) {
+	if value == nil || value.Sign() == 0 {
+		return
+	}
+	if existing, ok := totalByKey[key]; ok {
+		existing.Add(existing, value)
+		return
+	}
+	totalByKey[key] = new(big.Rat).Set(value)
+}
+
+func solanaTokenBalanceToRat(balance SolTokenBalance) *big.Rat {
+	uiAmount := strings.TrimSpace(balance.UiTokenAmount.UiAmountString)
+	if uiAmount != "" {
+		if v, ok := new(big.Rat).SetString(uiAmount); ok {
+			return v
+		}
+	}
+
+	rawAmount := parseBigInt(balance.UiTokenAmount.Amount)
+	if rawAmount.Sign() == 0 {
+		return big.NewRat(0, 1)
+	}
+	denominator := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(balance.UiTokenAmount.Decimals)), nil)
+	return new(big.Rat).SetFrac(rawAmount, denominator)
+}
+
+func solanaPrimaryWalletAddress(match SolMatch) string {
+	for _, accountKey := range match.Transaction.Message.AccountKeys {
+		if accountKey.Signer {
+			return strings.TrimSpace(accountKey.Pubkey)
+		}
+	}
+	if len(match.Transaction.Message.AccountKeys) > 0 {
+		return strings.TrimSpace(match.Transaction.Message.AccountKeys[0].Pubkey)
+	}
+	return ""
+}
+
+func solanaWalletDeltas(match SolMatch, walletAddress string) map[string]*big.Rat {
+	deltas := map[string]*big.Rat{}
+	wallet := strings.TrimSpace(walletAddress)
+	if wallet == "" {
+		return deltas
+	}
+
+	for _, pre := range match.Meta.PreTokenBalances {
+		if !strings.EqualFold(strings.TrimSpace(pre.Owner), wallet) {
+			continue
+		}
+		token := strings.TrimSpace(pre.Mint)
+		if token == "" {
+			continue
+		}
+		addRatValue(deltas, token, new(big.Rat).Neg(solanaTokenBalanceToRat(pre)))
+	}
+
+	for _, post := range match.Meta.PostTokenBalances {
+		if !strings.EqualFold(strings.TrimSpace(post.Owner), wallet) {
+			continue
+		}
+		token := strings.TrimSpace(post.Mint)
+		if token == "" {
+			continue
+		}
+		addRatValue(deltas, token, solanaTokenBalanceToRat(post))
+	}
+
+	for i, acc := range match.Transaction.Message.AccountKeys {
+		if !strings.EqualFold(strings.TrimSpace(acc.Pubkey), wallet) {
+			continue
+		}
+		if i >= len(match.Meta.PreBalances) || i >= len(match.Meta.PostBalances) {
+			continue
+		}
+		lamportDelta := match.Meta.PostBalances[i] - match.Meta.PreBalances[i]
+		if lamportDelta == 0 {
+			continue
+		}
+		addRatValue(deltas, nativeTokenAddress("solana"), new(big.Rat).SetFrac(big.NewInt(lamportDelta), big.NewInt(1_000_000_000)))
+	}
+
+	return deltas
+}
+
+func isSolanaSwapTransaction(match SolMatch) bool {
+	walletAddress := solanaPrimaryWalletAddress(match)
+	if walletAddress == "" {
+		return false
+	}
+	deltas := solanaWalletDeltas(match, walletAddress)
+	negatives := 0
+	positives := 0
+	for _, delta := range deltas {
+		if delta.Sign() < 0 {
+			negatives++
+		}
+		if delta.Sign() > 0 {
+			positives++
+		}
+	}
+	return negatives == 1 && positives == 1
+}
+
+func isSolanaTokenProgram(programID string) bool {
+	p := strings.TrimSpace(programID)
+	return p == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" ||
+		strings.HasPrefix(p, "TokenzQd")
+}
+
+func isSolanaApprovalInstruction(inst SolInstruction, parsed SolParsed) bool {
+	pt := strings.ToLower(strings.TrimSpace(parsed.Type))
+	if pt != "approve" && pt != "approvechecked" {
+		return false
+	}
+	return isSolanaTokenProgram(inst.ProgramId) || strings.EqualFold(strings.TrimSpace(inst.Program), "spl-token")
+}
+
+func isSolanaUnitTokenMovement(parsed SolParsed) bool {
+	if parsed.Info.TokenAmount != nil {
+		if strings.TrimSpace(parsed.Info.TokenAmount.Amount) == "1" && parsed.Info.TokenAmount.Decimals == 0 {
+			return true
+		}
+		if strings.TrimSpace(parsed.Info.TokenAmount.UiAmountString) == "1" && parsed.Info.TokenAmount.Decimals == 0 {
+			return true
+		}
+	}
+	if parsed.Info.Amount != nil {
+		switch v := parsed.Info.Amount.(type) {
+		case string:
+			return strings.TrimSpace(v) == "1"
+		case float64:
+			return int64(v) == 1
+		case json.Number:
+			i, _ := v.Int64()
+			return i == 1
+		}
+	}
+	return false
+}
+
+func isSolanaNftTransaction(match SolMatch) bool {
+	hasMetaplexInstruction := false
+	hasUnitTokenMovement := false
+
+	for _, inst := range match.Transaction.Message.Instructions {
+		if strings.EqualFold(strings.TrimSpace(inst.ProgramId), solanaMetaplexProgramID) ||
+			strings.Contains(strings.ToLower(strings.TrimSpace(inst.Program)), "metaplex") {
+			hasMetaplexInstruction = true
+		}
+
+		parsed, ok := parseSolParsed(inst.Parsed)
+		if !ok {
+			continue
+		}
+		pt := strings.ToLower(strings.TrimSpace(parsed.Type))
+		if (pt == "transfer" || pt == "transferchecked") && isSolanaUnitTokenMovement(parsed) {
+			hasUnitTokenMovement = true
+		}
+	}
+
+	return hasMetaplexInstruction && hasUnitTokenMovement
+}
+
+func classifySolanaInstructionTxType(inst SolInstruction, parsed SolParsed, isApprovalTx, isSwapTx, isNftTx bool) string {
+	if isApprovalTx {
+		return txTypeApproval
+	}
+	if isSwapTx {
+		return txTypeSwap
+	}
+	if isNftTx {
+		return txTypeNftTransfer
+	}
+	pt := strings.ToLower(strings.TrimSpace(parsed.Type))
+	if strings.Contains(pt, "transfer") && (isSolanaTokenProgram(inst.ProgramId) || strings.EqualFold(strings.TrimSpace(inst.Program), "spl-token")) {
+		return txTypeTokenTransfer
+	}
+	if isSolanaApprovalInstruction(inst, parsed) {
+		return txTypeApproval
+	}
+	if parsed.Info.Lamports != nil || strings.EqualFold(strings.TrimSpace(inst.Program), "system") {
+		return txTypeNativeTransfer
+	}
+	if strings.Contains(pt, "transfer") {
+		return txTypeTokenTransfer
+	}
+	return txTypeSmartContractInteraction
+}
+
 func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 	signature := ""
 	if len(match.Transaction.Signatures) > 0 {
@@ -761,9 +1668,21 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 	}
 
 	log.Printf("[SOLANA] Processing Tx: %s", signature)
+	isApprovalTx := false
+	for _, inst := range match.Transaction.Message.Instructions {
+		parsed, ok := parseSolParsed(inst.Parsed)
+		if !ok {
+			continue
+		}
+		if isSolanaApprovalInstruction(inst, parsed) {
+			isApprovalTx = true
+			break
+		}
+	}
+	isSwapTx := isSolanaSwapTransaction(match)
+	isNftTx := isSolanaNftTransaction(match)
 
 	for _, inst := range match.Transaction.Message.Instructions {
-		// Only process transfers for now
 		if len(inst.Parsed) == 0 {
 			continue
 		}
@@ -773,13 +1692,23 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 			continue
 		}
 
-		if parsed.Type == "transfer" || parsed.Type == "transferChecked" {
+		parsedType := strings.ToLower(strings.TrimSpace(parsed.Type))
+		if parsedType == "transfer" || parsedType == "transferchecked" || parsedType == "approve" || parsedType == "approvechecked" {
 			info := parsed.Info
 			from := info.Source
 			to := info.Destination
 
-			if from == "" || to == "" {
+			if from == "" {
+				from = info.Authority
+			}
+			if to == "" {
+				to = info.Delegate
+			}
+			if from == "" {
 				continue
+			}
+			if to == "" {
+				to = from
 			}
 
 			amountStr := "0"
@@ -818,9 +1747,13 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 				decimals = 0
 			}
 
-			if amountStr == "" || amountStr == "0" {
+			if amountStr == "" {
+				amountStr = "0"
+			}
+			if amountStr == "0" && !(parsedType == "approve" || parsedType == "approvechecked") {
 				continue
 			}
+			txType := classifySolanaInstructionTxType(inst, parsed, isApprovalTx, isSwapTx, isNftTx)
 
 			wallets := []string{from, to}
 			insertedAny := false
@@ -853,7 +1786,7 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 						NetworkFee:         formatTokenAmount(big.NewInt(match.Meta.Fee), 9),
 						NetworkFeeLamports: match.Meta.Fee,
 						Status:             "success",
-						TransactionType:    "transfer",
+						TransactionType:    txType,
 						Direction:          direction,
 						CreatedAt:          time.Now(),
 						Standard:           inst.Program,
@@ -888,13 +1821,27 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 				}
 			}
 
-			if insertedAny {
+			if insertedAny && (parsedType == "transfer" || parsedType == "transferchecked") {
 				tokenAddr := inst.ProgramId
 				if inst.Program == "system" {
-					tokenAddr = nativeTokenAddress("solana")
+					// Native SOL balance change is handled via pre/post balances below
+					// We only process it here for transaction history records
+				} else {
+					tokenAddr = normalizeTokenAddress("solana", tokenAddr)
+					updateUserBalancesForTransfer("solana", from, to, tokenAddr, amountStr)
 				}
-				updateUserBalancesForTransfer("solana", from, to, tokenAddr, amountStr)
 			}
+		}
+	}
+
+	// Native SOL Balance Adjustment using Pre/Post Balances (Includes fees, rent, and transfers)
+	for i, acc := range match.Transaction.Message.AccountKeys {
+		if i >= len(match.Meta.PreBalances) || i >= len(match.Meta.PostBalances) {
+			continue
+		}
+		diff := match.Meta.PostBalances[i] - match.Meta.PreBalances[i]
+		if diff != 0 {
+			updateUserBalanceForAddress("solana", acc.Pubkey, nativeTokenAddress("solana"), formatTokenAmount(big.NewInt(diff), 9))
 		}
 	}
 }
@@ -902,7 +1849,7 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 // ---------------------------------------------------------
 // 6. TRON PROCESSOR
 // ---------------------------------------------------------
-func processTronTransaction(tx Transfer) {
+func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 	// 1. Format Address (HEX -> Base58)
 	fromBase58 := normalizeTronAddress(tx.From)
 	toBase58 := normalizeTronAddress(tx.To)
@@ -947,6 +1894,10 @@ func processTronTransaction(tx Transfer) {
 	}
 
 	insertedAny := false
+	classifiedTxType := classifyTronTxType(tx)
+	if mappedType, ok := txTypeByHash[strings.ToLower(strings.TrimSpace(tx.TxHash))]; ok && mappedType != "" {
+		classifiedTxType = mappedType
+	}
 	for _, walletHex := range wallets {
 		if walletHex == "" {
 			continue
@@ -963,23 +1914,31 @@ func processTronTransaction(tx Transfer) {
 				direction = "send"
 			}
 
-			if tx.Contract != "" {
+			if classifiedTxType == txTypeSmartContractInteraction {
 				direction = "contract"
 			}
 
+			walletAddress := normalizeTronAddressForStorage(wa.Address)
+			if walletAddress == "" {
+				continue
+			}
+			fromAddress := normalizeTronAddressForStorage(tx.From)
+			toAddress := normalizeTronAddressForStorage(tx.To)
+			contractAddress := normalizeTronAddressForStorage(tx.Contract)
+
 			dbTx := WalletTransactionHistory{
-				WalletAddress:   wa.Address,
+				WalletAddress:   walletAddress,
 				TxHash:          tx.TxHash,
 				Chain:           "tron",
 				BlockNumber:     int64(tx.BlockNumber),
 				BlockTime:       tx.BlockTime,
-				FromAddress:     tx.From,
-				ToAddress:       tx.To,
+				FromAddress:     fromAddress,
+				ToAddress:       toAddress,
 				Amount:          amountStr,
 				Status:          "success",
-				TransactionType: "transfer",
+				TransactionType: classifiedTxType,
 				Standard:        tx.Standard,
-				ContractAddress: tx.Contract,
+				ContractAddress: contractAddress,
 				TokenName:       tx.TokenName,
 				TokenSymbol:     tx.TokenSymbol,
 				TokenDecimal:    uint8(decimals),
@@ -996,17 +1955,17 @@ func processTronTransaction(tx Transfer) {
 				DoNothing: true,
 			}).Create(&dbTx)
 
-			logTxHistoryResult("TRON", "tron_transaction_histories", wa.Address, "tron", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			logTxHistoryResult("TRON", "tron_transaction_histories", walletAddress, "tron", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 			if result.Error == nil {
 				triggerNotification(NotificationParams{
-					Address:   wa.Address,
+					Address:   walletAddress,
 					Chain:     "tron",
 					Amount:    dbTx.Amount,
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 				})
-				updateRedis(wa.Address, "tron", dbTx)
+				updateRedis(walletAddress, "tron", dbTx)
 				if result.RowsAffected > 0 {
 					insertedAny = true
 				}
@@ -1022,13 +1981,18 @@ func processTronTransaction(tx Transfer) {
 			tokenAddress = normalizeTokenAddress("tron", tokenAddress)
 		}
 		updateUserBalancesForTransfer("tron", tx.From, tx.To, tokenAddress, amountStr)
+
+		// Deduct gas fees for Tron (TRX)
+		if tx.CostInTrx != "" && tx.CostInTrx != "0" {
+			updateUserBalanceForAddress("tron", tx.From, nativeTokenAddress("tron"), negateAmount(tx.CostInTrx))
+		}
 	}
 }
 
 // ---------------------------------------------------------
 // 7. EVM PROCESSOR (QUICKNODE)
 // ---------------------------------------------------------
-func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
+func processEvmTransaction(tx Transfer, chainInfo evmChainInfo, txTypeByHash map[string]string) {
 	wallets := []string{tx.From, tx.To}
 	log.Printf("[EVM] Processing %s Tx: %s", chainInfo.Chain, tx.TxHash)
 
@@ -1056,6 +2020,10 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
 		if valBig != nil {
 			amountStr = formatTokenAmount(valBig, decimals)
 		}
+	}
+	classifiedTxType := classifyQuickNodeEvmTxType(tx)
+	if mappedType, ok := txTypeByHash[strings.ToLower(strings.TrimSpace(tx.TxHash))]; ok && mappedType != "" {
+		classifiedTxType = mappedType
 	}
 
 	insertedAny := false
@@ -1090,7 +2058,8 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
 				NetworkFeeNative: feeNativeStr,
 				NetworkFeeUsd:    feeUsd,
 				Status:           "success",
-				TransactionType:  "transfer",
+				TransactionType:  classifiedTxType,
+				MethodId:         normalizeMethodID(tx.MethodId),
 				Standard:         tx.Standard,
 				ContractAddress:  strings.ToLower(tx.Contract),
 				TokenName:        tx.TokenName,
@@ -1161,13 +2130,18 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo) {
 			tokenAddress = normalizeTokenAddress(chainInfo.RedisKey, tokenAddress)
 		}
 		updateUserBalancesForTransfer(chainInfo.RedisKey, tx.From, tx.To, tokenAddress, amountStr)
+
+		// Deduct gas fees
+		if feeNativeStr != "" && feeNativeStr != "0" {
+			updateUserBalanceForAddress(chainInfo.RedisKey, tx.From, nativeTokenAddress(chainInfo.RedisKey), negateAmount(feeNativeStr))
+		}
 	}
 }
 
 // ---------------------------------------------------------
 // 8. MORALIS EVM PROCESSOR
 // ---------------------------------------------------------
-func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber int64, blockTime int64) {
+func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber int64, blockTime int64, txTypeByHash map[string]string) {
 	if tx.Hash == "" {
 		return
 	}
@@ -1219,7 +2193,8 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 				NetworkFeeNative: feeNativeStr,
 				NetworkFeeUsd:    feeUsd,
 				Status:           "success",
-				TransactionType:  "transfer",
+				TransactionType:  classifyMoralisNativeTxType(tx, txTypeByHash),
+				MethodId:         methodIDFromInput(tx.Input),
 				Standard:         "native",
 				Direction:        direction,
 				CreatedAt:        time.Now(),
@@ -1284,10 +2259,135 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 	if insertedAny {
 		tokenAddress := nativeTokenAddress(chainInfo.RedisKey)
 		updateUserBalancesForTransfer(chainInfo.RedisKey, tx.FromAddress, tx.ToAddress, tokenAddress, amountStr)
+
+		// Deduct gas fees
+		if feeNativeStr != "" && feeNativeStr != "0" {
+			updateUserBalanceForAddress(chainInfo.RedisKey, tx.FromAddress, tokenAddress, negateAmount(feeNativeStr))
+		}
 	}
 }
 
-func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string]MoralisTx, chainInfo evmChainInfo, blockNumber int64, blockTime int64) {
+func processMoralisErc20Approval(approval MoralisErc20Approval, txMap map[string]MoralisTx, chainInfo evmChainInfo, blockNumber int64, blockTime int64, txTypeByHash map[string]string) {
+	if approval.TransactionHash == "" {
+		return
+	}
+
+	txRef, hasTx := txMap[strings.ToLower(approval.TransactionHash)]
+	from := approval.Owner
+	to := approval.Spender
+	if from == "" {
+		from = txRef.FromAddress
+	}
+	if to == "" {
+		to = txRef.ToAddress
+	}
+	if from == "" && to == "" {
+		return
+	}
+
+	gasUsed := big.NewInt(0)
+	gasPrice := big.NewInt(0)
+	if hasTx {
+		gasUsed = parseBigInt(txRef.ReceiptGasUsed)
+		if gasUsed.Sign() == 0 && txRef.Gas != "" {
+			gasUsed = parseBigInt(txRef.Gas)
+		}
+		gasPrice = parseBigInt(txRef.GasPrice)
+	}
+	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
+	feeNativeStr, feeUsd := computeNetworkFeeNativeAndUsd(feeWei, chainInfo)
+
+	amountStr := "0"
+	if strings.TrimSpace(approval.Value) != "" {
+		amountStr = strings.TrimSpace(approval.Value)
+	}
+	decimals := 0
+	if approval.TokenDecimals != "" {
+		if parsed, err := strconv.Atoi(approval.TokenDecimals); err == nil {
+			decimals = parsed
+		}
+	}
+
+	wallets := []string{from, to}
+	for _, walletAddr := range wallets {
+		if walletAddr == "" {
+			continue
+		}
+
+		waList, _ := resolveWalletAddresses(chainInfo.RedisKey, walletAddr)
+		if len(waList) == 0 {
+			continue
+		}
+
+		for _, wa := range waList {
+			direction := "receive"
+			if strings.EqualFold(walletAddr, from) {
+				direction = "send"
+			}
+
+			dbTx := EvmTransactionHistory{
+				WalletAddress:    wa.Address,
+				TxHash:           approval.TransactionHash,
+				Chain:            chainInfo.Chain,
+				BlockNumber:      blockNumber,
+				BlockTime:        blockTime,
+				FromAddress:      strings.ToLower(from),
+				ToAddress:        strings.ToLower(to),
+				Amount:           amountStr,
+				GasUsed:          gasUsed.Int64(),
+				GasPrice:         gasPrice.String(),
+				NetworkFee:       feeWei.String(),
+				NetworkFeeNative: feeNativeStr,
+				NetworkFeeUsd:    feeUsd,
+				Status:           "success",
+				TransactionType:  classifyMoralisApprovalTxType(approval, txTypeByHash),
+				MethodId:         methodIDFromInput(txRef.Input),
+				Standard:         "erc20_approval",
+				ContractAddress:  strings.ToLower(strings.TrimSpace(approval.Contract)),
+				TokenName:        approval.TokenName,
+				TokenSymbol:      approval.TokenSymbol,
+				TokenDecimal:     uint8(decimals),
+				Direction:        direction,
+				CreatedAt:        time.Now(),
+				GasLimit:         parseInt64(txRef.Gas),
+			}
+
+			if chainInfo.Chain == "ETH" {
+				dbTx.ChainId = 1
+				dbTx.ChainName = "Ethereum"
+			} else if chainInfo.Chain == "POL" {
+				dbTx.ChainId = 137
+				dbTx.ChainName = "Polygon"
+			} else if chainInfo.Chain == "BASE" {
+				dbTx.ChainId = 8453
+				dbTx.ChainName = "Base"
+			} else if chainInfo.Chain == "BSC" {
+				dbTx.ChainId = 56
+				dbTx.ChainName = "BSC"
+			}
+
+			result := db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+				DoNothing: true,
+			}).Create(&dbTx)
+
+			logTxHistoryResult("MORALIS", "evm_transaction_histories", wa.Address, chainInfo.Chain, dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			if result.Error == nil {
+				triggerNotification(NotificationParams{
+					Address:   wa.Address,
+					Chain:     chainInfo.Chain,
+					Amount:    dbTx.Amount,
+					Symbol:    dbTx.TokenSymbol,
+					Direction: dbTx.Direction,
+					TxHash:    dbTx.TxHash,
+				})
+				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
+			}
+		}
+	}
+}
+
+func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string]MoralisTx, chainInfo evmChainInfo, blockNumber int64, blockTime int64, txTypeByHash map[string]string) {
 	if transfer.TransactionHash == "" {
 		return
 	}
@@ -1357,7 +2457,8 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 				NetworkFeeNative: feeNativeStr,
 				NetworkFeeUsd:    feeUsd,
 				Status:           "success",
-				TransactionType:  "transfer",
+				TransactionType:  classifyMoralisErc20TxType(transfer, txTypeByHash),
+				MethodId:         methodIDFromInput(txRef.Input),
 				Standard:         "erc20",
 				ContractAddress:  strings.ToLower(transfer.Contract),
 				TokenName:        transfer.TokenName,
@@ -1411,6 +2512,11 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 			tokenAddress = nativeTokenAddress(chainInfo.RedisKey)
 		}
 		updateUserBalancesForTransfer(chainInfo.RedisKey, transfer.From, transfer.To, tokenAddress, amountStr)
+
+		// Deduct gas fees (native token) from sender
+		if feeNativeStr != "" && feeNativeStr != "0" {
+			updateUserBalanceForAddress(chainInfo.RedisKey, transfer.From, nativeTokenAddress(chainInfo.RedisKey), negateAmount(feeNativeStr))
+		}
 	}
 }
 
@@ -1512,7 +2618,7 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 				Amount:          amountStr,
 				NetworkFee:      networkFee,
 				Status:          "success",
-				TransactionType: "transfer",
+				TransactionType: txTypeNativeTransfer,
 				Direction:       direction,
 				CreatedAt:       time.Now(),
 				NetworkFeeSats:  feeInt.Int64(),
@@ -1702,6 +2808,37 @@ func normalizeTronAddress(address string) string {
 		return trimmed
 	}
 	return base58
+}
+
+func looksLikeTronHex41Address(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "0x") || strings.HasPrefix(trimmed, "0X") {
+		trimmed = trimmed[2:]
+	}
+	if len(trimmed) != 42 {
+		return false
+	}
+	if !(trimmed[0] == '4' && trimmed[1] == '1') {
+		return false
+	}
+	for _, r := range trimmed {
+		if !isHexChar(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeTronAddressForStorage(address string) string {
+	normalized := strings.TrimSpace(normalizeTronAddress(address))
+	if normalized == "" {
+		return ""
+	}
+	// Prevent hex-like values from being persisted into Tron history fields.
+	if strings.HasPrefix(strings.ToLower(normalized), "0x") || looksLikeEvmAddress(normalized) || looksLikeTronHex41Address(normalized) {
+		return ""
+	}
+	return normalized
 }
 
 func updateUserBalancesForTransfer(chainID, fromAddr, toAddr, tokenAddress, amountStr string) {
@@ -1998,10 +3135,22 @@ func sha256d(data []byte) []byte {
 }
 
 func HexToTronAddress(hexAddr string) (string, error) {
+	hexAddr = strings.TrimSpace(hexAddr)
 	hexAddr = strings.TrimPrefix(hexAddr, "0x")
+	hexAddr = strings.TrimPrefix(hexAddr, "0X")
+
 	addrBytes, err := hex.DecodeString(hexAddr)
 	if err != nil {
 		return "", err
+	}
+
+	// Some providers send TRON addresses as 21-byte hex with 0x41 prefix.
+	// Convert both 20-byte (EVM-style) and 21-byte TRON-prefixed formats.
+	if len(addrBytes) == 21 {
+		if addrBytes[0] != 0x41 {
+			return "", fmt.Errorf("invalid tron address prefix byte: 0x%x", addrBytes[0])
+		}
+		addrBytes = addrBytes[1:]
 	}
 	if len(addrBytes) != 20 {
 		return "", fmt.Errorf("invalid address length: got %d bytes", len(addrBytes))
