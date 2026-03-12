@@ -189,17 +189,32 @@ type UserBalance struct {
 
 // WalletAddress maps to the `wallet_addresses` table for wallet_id lookup.
 type WalletAddress struct {
-	ID             int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	WalletID       string    `gorm:"column:wallet_id;type:char(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index"`
-	ChainID        string    `gorm:"column:chain_id;type:varchar(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index;uniqueIndex:uq_chain_address"`
-	IndexN         int64     `gorm:"column:index_n;not null;uniqueIndex:uq_wallet_chain_index"`
-	Address        string    `gorm:"column:address;type:varchar(128);not null;uniqueIndex:uq_chain_address"`
-	DerivationPath string    `gorm:"column:derivation_path;type:varchar(255)"`
-	AddressHex     string    `gorm:"column:address_hex;type:varchar(255)"`
-	CreatedAt      time.Time `gorm:"column:created_at"`
-	UpdatedAt      time.Time `gorm:"column:updated_at"`
-	Label          string    `gorm:"column:label;type:varchar(255);not null"`
-	Active         bool      `gorm:"column:active;type:tinyint(1);not null;default:1"`
+	ID             int64     `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	WalletID       string    `gorm:"column:wallet_id;type:char(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index,priority:1;uniqueIndex:uq_wallet_chain_address,priority:1" json:"wallet_id"`
+	Wallet         Wallet    `gorm:"constraint:OnDelete:CASCADE" json:"-"`
+	ChainID        string    `gorm:"column:chain_id;size:64;not null;index:idx_addr_wallet_chain;index:idx_chain_address,priority:1;uniqueIndex:uq_wallet_chain_index,priority:2;uniqueIndex:uq_wallet_chain_address,priority:2" json:"chain_id"`
+	IndexN         int       `gorm:"column:index_n;not null;uniqueIndex:uq_wallet_chain_index,priority:3" json:"index_n"`
+	Address        string    `gorm:"column:address;size:128;not null;index:idx_chain_address,priority:2;uniqueIndex:uq_wallet_chain_address,priority:3" json:"address"`
+	DerivationPath *string   `gorm:"column:derivation_path;size:255" json:"derivation_path"`
+	AddressHex     *string   `gorm:"column:address_hex;size:255" json:"address_hex"`
+	CreatedAt      time.Time `gorm:"column:created_at;autoCreateTime;type:timestamp" json:"created_at"`
+	UpdatedAt      time.Time `gorm:"column:updated_at;autoUpdateTime;type:timestamp" json:"updated_at"`
+	Label          string    `gorm:"column:label;size:255;not null" json:"label"`
+	Active         bool      `gorm:"column:active;not null;default:true" json:"active"`
+}
+
+type Wallet struct {
+	WalletID           string          `gorm:"column:wallet_id;type:char(64);primaryKey" json:"wallet_id"`
+	Label              string          `gorm:"column:label;size:255;not null" json:"label"`
+	CreatedAt          time.Time       `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt          time.Time       `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+	Addresses          []WalletAddress `gorm:"constraint:OnDelete:CASCADE" json:"addresses"`
+	Active             bool            `gorm:"column:active;not null;default:true" json:"active"`
+	IsPrivateKeyImport bool            `gorm:"column:is_private_key_import;not null;default:false" json:"is_private_key_import"`
+}
+
+func (Wallet) TableName() string {
+	return "wallets"
 }
 
 // UserWalletDevice represents the link between a WalletID and a physical device (iOS/Android)
@@ -539,7 +554,6 @@ func initDatabase() {
 		log.Fatalf("Failed to connect to db: %v", err)
 	}
 
-	// AutoMigrate tables to ensure they exist
 	if err := db.AutoMigrate(
 		&WalletTransactionHistory{},
 		&EvmTransactionHistory{},
@@ -580,6 +594,45 @@ func initRedis() {
 	} else {
 		log.Println("Connected to Redis")
 	}
+}
+func AutoMigrate(gdb *gorm.DB) error {
+	if gdb == nil {
+		return fmt.Errorf("db is nil")
+	}
+	orig := gdb.Config.DisableForeignKeyConstraintWhenMigrating
+	gdb.Config.DisableForeignKeyConstraintWhenMigrating = true
+	err := gdb.AutoMigrate(
+		&Wallet{},
+		&WalletAddress{},
+		&UserBalance{},
+		&UserWalletDevice{},
+		&EvmTransactionHistory{},
+		&SolTransactionHistory{},
+	)
+	gdb.Config.DisableForeignKeyConstraintWhenMigrating = orig
+	if err != nil {
+		return err
+	}
+
+	// Verify crucial column addition for Wallet table
+	if !gdb.Migrator().HasColumn(&Wallet{}, "is_private_key_import") {
+		return fmt.Errorf("migration failed: column is_private_key_import missing in wallets table")
+	}
+
+	// Migration: allow the same chain/address to exist across different wallet IDs.
+	// Previous schema enforced global uniqueness on (chain_id, address) via uq_chain_address.
+	if gdb.Migrator().HasIndex(&WalletAddress{}, "uq_chain_address") {
+		if err := gdb.Migrator().DropIndex(&WalletAddress{}, "uq_chain_address"); err != nil {
+			return fmt.Errorf("failed to drop legacy index uq_chain_address: %w", err)
+		}
+	}
+	if !gdb.Migrator().HasIndex(&WalletAddress{}, "uq_wallet_chain_address") {
+		if err := gdb.Migrator().CreateIndex(&WalletAddress{}, "uq_wallet_chain_address"); err != nil {
+			return fmt.Errorf("failed to create index uq_wallet_chain_address: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ---------------------------------------------------------
@@ -1812,6 +1865,7 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 							Symbol:    dbTx.TokenSymbol,
 							Direction: dbTx.Direction,
 							TxHash:    dbTx.Signature,
+							TxType:    dbTx.TransactionType,
 						})
 						updateRedis(wa.Address, "solana", dbTx)
 						if result.RowsAffected > 0 {
@@ -1964,6 +2018,7 @@ func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(walletAddress, "tron", dbTx)
 				if result.RowsAffected > 0 {
@@ -2113,6 +2168,7 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo, txTypeByHash map
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2247,6 +2303,7 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 					Symbol:    "native",
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2380,6 +2437,7 @@ func processMoralisErc20Approval(approval MoralisErc20Approval, txMap map[string
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 			}
@@ -2497,6 +2555,7 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2639,6 +2698,7 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 					Symbol:    "BTC",
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, "btc", dbTx)
 				if result.RowsAffected > 0 {
@@ -2905,29 +2965,37 @@ func updateUserBalanceForAddress(chainID, address, tokenAddress, delta string) {
 func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 	normalizedAddr := normalizeAddress(chainID, address)
 	addrCandidates := []string{normalizedAddr}
+	log.Printf("[ADDR_RESOLVE] start chain_id=%s input_address=%s normalized_address=%s", chainID, address, normalizedAddr)
 
 	if strings.EqualFold(chainID, "tron") {
 		if base58Addr, err := HexToTronAddress(normalizedAddr); err == nil {
 			if base58Addr != "" && !contains(addrCandidates, base58Addr) {
 				addrCandidates = append(addrCandidates, base58Addr)
 			}
+		} else {
+			log.Printf("[ADDR_RESOLVE] tron hex->base58 conversion skipped chain_id=%s normalized_address=%s err=%v", chainID, normalizedAddr, err)
 		}
 	}
 
 	chainCandidates := getChainSynonyms(chainID)
+	log.Printf("[ADDR_RESOLVE] candidates chain_id=%s chains=%v addresses=%v", chainID, chainCandidates, addrCandidates)
 
 	for _, chain := range chainCandidates {
 		for _, addr := range addrCandidates {
+			log.Printf("[ADDR_RESOLVE] querying chain_candidate=%s address_candidate=%s", chain, addr)
 			var rows []WalletAddress
 			if err := db.Where("LOWER(chain_id) = LOWER(?) AND (LOWER(address) = LOWER(?) OR LOWER(address_hex) = LOWER(?))", chain, addr, addr).Find(&rows).Error; err != nil {
+				log.Printf("[ADDR_RESOLVE] query_error chain_candidate=%s address_candidate=%s err=%v", chain, addr, err)
 				return nil, err
 			}
 			if len(rows) > 0 {
+				log.Printf("[ADDR_RESOLVE] matched chain_candidate=%s address_candidate=%s rows=%d", chain, addr, len(rows))
 				return rows, nil
 			}
 		}
 	}
 
+	log.Printf("[ADDR_RESOLVE] no_match chain_id=%s input_address=%s", chainID, address)
 	return nil, nil
 }
 
@@ -3386,6 +3454,7 @@ type NotificationParams struct {
 	Symbol    string
 	Direction string
 	TxHash    string
+	TxType    string
 	Extras    map[string]string
 }
 
@@ -3396,6 +3465,7 @@ func triggerNotification(params NotificationParams) {
 	symbol := params.Symbol
 	direction := params.Direction
 	txHash := params.TxHash
+	txType := params.TxType
 	extras := params.Extras
 
 	if symbol == "" || symbol == "native" {
@@ -3444,6 +3514,7 @@ func triggerNotification(params NotificationParams) {
 			"chain":     chain,
 			"direction": direction,
 			"tx_hash":   txHash,
+			"tx_type":   txType,
 			"type":      "transaction_alert",
 		}
 
