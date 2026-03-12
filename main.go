@@ -2163,12 +2163,13 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo, txTypeByHash map
 			if result.Error == nil {
 				triggerNotification(NotificationParams{
 					Address:   wa.Address,
-					Chain:     chainInfo.RedisKey,
+					Chain:     dbTx.Chain,
 					Amount:    dbTx.Amount,
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
+					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2304,6 +2305,7 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
+					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2438,6 +2440,7 @@ func processMoralisErc20Approval(approval MoralisErc20Approval, txMap map[string
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
+					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 			}
@@ -2556,6 +2559,7 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
+					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -3455,6 +3459,7 @@ type NotificationParams struct {
 	Direction string
 	TxHash    string
 	TxType    string
+	ChainID   string
 	Extras    map[string]string
 }
 
@@ -3466,6 +3471,7 @@ func triggerNotification(params NotificationParams) {
 	direction := params.Direction
 	txHash := params.TxHash
 	txType := params.TxType
+	pChainID := params.ChainID
 	extras := params.Extras
 
 	if symbol == "" || symbol == "native" {
@@ -3480,7 +3486,7 @@ func triggerNotification(params NotificationParams) {
 	var walletAddrs []WalletAddress
 	err := db.Where("address = ? AND chain_id = ?", normalizeAddress(chain, address), chainID).Find(&walletAddrs).Error
 	if err != nil {
-		log.Printf("[Notification] DB error looking up wallet for %s: %v", address, err)
+		log.Printf("[Notification] DB error looking up wallet for %s: %s %v", address, chainID, err)
 		return
 	}
 	log.Printf("[Notification] Found %d wallet(s) for %s on chain %s", len(walletAddrs), address, chain)
@@ -3506,12 +3512,18 @@ func triggerNotification(params NotificationParams) {
 			body = fmt.Sprintf("You received %s %s ", amount, symbol)
 		}
 
+		finalChainID := wa.ChainID
+		if pChainID != "" {
+			finalChainID = pChainID
+		}
+
 		data := map[string]string{
 			"wallet_id": wa.WalletID,
 			"address":   address,
 			"amount":    amount,
 			"symbol":    symbol,
 			"chain":     chain,
+			"chain_id":  finalChainID,
 			"direction": direction,
 			"tx_hash":   txHash,
 			"tx_type":   txType,

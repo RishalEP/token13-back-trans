@@ -1,9 +1,9 @@
 name: Back-trans CI/CD deploy to EC2 dev
 
 on:
-   push:
-     branches:
-       - backup-dev
+   # push:
+   #   branches:
+   #     - backup-dev
    workflow_dispatch:
 
 jobs:
