@@ -1626,6 +1626,54 @@ func solanaWalletDeltas(match SolMatch, walletAddress string) map[string]*big.Ra
 	return deltas
 }
 
+func solanaAccountIndexForPubkey(match SolMatch, pubkey string) int {
+	target := strings.TrimSpace(pubkey)
+	if target == "" {
+		return -1
+	}
+	for idx, accountKey := range match.Transaction.Message.AccountKeys {
+		if strings.EqualFold(strings.TrimSpace(accountKey.Pubkey), target) {
+			return idx
+		}
+	}
+	return -1
+}
+
+func solanaTokenBalanceOwnerByAccountIndex(balances []SolTokenBalance, accountIndex int) string {
+	if accountIndex < 0 {
+		return ""
+	}
+	for _, balance := range balances {
+		if balance.AccountIndex != accountIndex {
+			continue
+		}
+		owner := strings.TrimSpace(balance.Owner)
+		if owner != "" {
+			return owner
+		}
+	}
+	return ""
+}
+
+func solanaTokenAccountOwner(match SolMatch, tokenAccount string, preferPostBalance bool) string {
+	accountIndex := solanaAccountIndexForPubkey(match, tokenAccount)
+	if accountIndex < 0 {
+		return ""
+	}
+
+	if preferPostBalance {
+		if owner := solanaTokenBalanceOwnerByAccountIndex(match.Meta.PostTokenBalances, accountIndex); owner != "" {
+			return owner
+		}
+		return solanaTokenBalanceOwnerByAccountIndex(match.Meta.PreTokenBalances, accountIndex)
+	}
+
+	if owner := solanaTokenBalanceOwnerByAccountIndex(match.Meta.PreTokenBalances, accountIndex); owner != "" {
+		return owner
+	}
+	return solanaTokenBalanceOwnerByAccountIndex(match.Meta.PostTokenBalances, accountIndex)
+}
+
 func isSolanaSwapTransaction(match SolMatch) bool {
 	walletAddress := solanaPrimaryWalletAddress(match)
 	if walletAddress == "" {
@@ -1768,14 +1816,26 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 		parsedType := strings.ToLower(strings.TrimSpace(parsed.Type))
 		if parsedType == "transfer" || parsedType == "transferchecked" || parsedType == "approve" || parsedType == "approvechecked" {
 			info := parsed.Info
-			from := info.Source
-			to := info.Destination
+			isTokenInstruction := isSolanaTokenProgram(inst.ProgramId) || strings.EqualFold(strings.TrimSpace(inst.Program), "spl-token")
+
+			from := strings.TrimSpace(info.Source)
+			to := strings.TrimSpace(info.Destination)
+			if isTokenInstruction && (parsedType == "transfer" || parsedType == "transferchecked") {
+				if sourceOwner := solanaTokenAccountOwner(match, from, false); sourceOwner != "" {
+					from = sourceOwner
+				} else if strings.TrimSpace(info.Authority) != "" {
+					from = strings.TrimSpace(info.Authority)
+				}
+				if destinationOwner := solanaTokenAccountOwner(match, to, true); destinationOwner != "" {
+					to = destinationOwner
+				}
+			}
 
 			if from == "" {
-				from = info.Authority
+				from = strings.TrimSpace(info.Authority)
 			}
 			if to == "" {
-				to = info.Delegate
+				to = strings.TrimSpace(info.Delegate)
 			}
 			if from == "" {
 				continue
