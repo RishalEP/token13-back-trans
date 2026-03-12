@@ -35,10 +35,8 @@ jobs:
 
       # 4️⃣ Parse EC2 secrets JSON to env file
       - name: Parse back-trans EC2 secrets
-        env:
-          SECRETS_JSON: ${{ secrets.EC2_DEV_BACK_TRANS_SECRETS }}
         run: |
-          printf '%s' "$SECRETS_JSON" > back-trans.json
+          echo '${{ secrets.EC2_DEV_BACK_TRANS_SECRETS }}' > back-trans.json
           jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans.env
           shred -u back-trans.json
 
