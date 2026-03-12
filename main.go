@@ -674,14 +674,41 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
 	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
 
+	payloadCopy := append([]byte(nil), bodyBytes...)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte("Accepted")); err != nil {
+		log.Printf("[REQUEST %s] Failure: write response error: %v", reqID, err)
+		return
+	}
+	log.Printf("[REQUEST %s] Accepted for background processing. AckDuration=%s", reqID, time.Since(start))
+
+	go processWebhookPayloadsAsync(reqID, payloadCopy, start)
+}
+
+func processWebhookPayloadsAsync(reqID string, bodyBytes []byte, requestStart time.Time) {
+	bgStart := time.Now()
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[REQUEST %s] Background failure: panic: %v", reqID, rec)
+			log.Printf("[REQUEST %s] Background panic stack: %s", reqID, debug.Stack())
+		}
+	}()
+
+	if err := processWebhookPayloads(reqID, bodyBytes); err != nil {
+		log.Printf("[REQUEST %s] Background failure. ProcessDuration=%s TotalSinceRequest=%s Error=%v", reqID, time.Since(bgStart), time.Since(requestStart), err)
+		return
+	}
+	log.Printf("[REQUEST %s] Background success. ProcessDuration=%s TotalSinceRequest=%s", reqID, time.Since(bgStart), time.Since(requestStart))
+}
+
+func processWebhookPayloads(reqID string, bodyBytes []byte) error {
 	var payloads [][]byte
 	bodyTrimmed := strings.TrimSpace(string(bodyBytes))
 	if strings.HasPrefix(bodyTrimmed, "[") {
 		var rawMessages []json.RawMessage
 		if err := json.Unmarshal(bodyBytes, &rawMessages); err != nil {
 			log.Printf("[REQUEST %s] Failure: JSON decode error (array): %v", reqID, err)
-			http.Error(w, "Invalid JSON array", http.StatusBadRequest)
-			return
+			return fmt.Errorf("invalid json array: %w", err)
 		}
 		for _, msg := range rawMessages {
 			payloads = append(payloads, []byte(msg))
@@ -695,8 +722,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		var envelope map[string]json.RawMessage
 		if err := json.Unmarshal(currentPayload, &envelope); err != nil {
 			log.Printf("[REQUEST %s] Failure: JSON decode error (item %d): %v", reqID, i, err)
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
+			return fmt.Errorf("invalid json item %d: %w", i, err)
 		}
 
 		switch {
@@ -704,8 +730,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			var payload QuickNodePayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
 				log.Printf("[REQUEST %s] Failure: QuickNode decode error (item %d): %v", reqID, i, err)
-				http.Error(w, "Invalid QuickNode JSON", http.StatusBadRequest)
-				return
+				return fmt.Errorf("invalid quicknode item %d: %w", i, err)
 			}
 			chainInfo := chainInfoFromQuickNodeNetwork(payload.Metadata.Network)
 			log.Printf("[REQUEST %s] Starting processing (item %d): type=quicknode chain=%s network=%s transfers=%d", reqID, i, chainInfo.Chain, payload.Metadata.Network, len(payload.Transfers))
@@ -715,8 +740,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			var payload MoralisEvmPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
 				log.Printf("[REQUEST %s] Failure: Moralis decode error (item %d): %v", reqID, i, err)
-				http.Error(w, "Invalid Moralis JSON", http.StatusBadRequest)
-				return
+				return fmt.Errorf("invalid moralis item %d: %w", i, err)
 			}
 			chainInfo := chainInfoFromMoralisChainId(payload.ChainId)
 			log.Printf("[REQUEST %s] Starting processing (item %d): type=moralis chain=%s chainId=%s native=%d erc20=%d", reqID, i, chainInfo.Chain, payload.ChainId, len(payload.Txs), len(payload.Erc20Transfers))
@@ -726,8 +750,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			var payload QuickNodeBtcPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
 				log.Printf("[REQUEST %s] Failure: BTC decode error (item %d): %v", reqID, i, err)
-				http.Error(w, "Invalid BTC JSON", http.StatusBadRequest)
-				return
+				return fmt.Errorf("invalid btc item %d: %w", i, err)
 			}
 			log.Printf("[REQUEST %s] Starting processing (item %d): type=btc count=%d", reqID, i, len(payload.Transactions))
 			handleBtcPayload(payload)
@@ -736,8 +759,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			var payload QuickNodeSolanaPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
 				log.Printf("[REQUEST %s] Failure: Solana decode error (item %d): %v", reqID, i, err)
-				http.Error(w, "Invalid Solana JSON", http.StatusBadRequest)
-				return
+				return fmt.Errorf("invalid solana item %d: %w", i, err)
 			}
 			log.Printf("[REQUEST %s] Starting processing (item %d): type=solana slot=%d matches=%d", reqID, i, payload.Slot, len(payload.Matches))
 			handleSolanaPayload(payload)
@@ -752,14 +774,11 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			log.Printf("[REQUEST %s] Failure: unsupported payload shape (item %d)", reqID, i)
-			http.Error(w, "Unsupported payload", http.StatusBadRequest)
-			return
+			return fmt.Errorf("unsupported payload item %d", i)
 		}
 	}
 
-	log.Printf("[REQUEST %s] Success. Duration=%s", reqID, time.Since(start))
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Received"))
+	return nil
 }
 
 // ---------------------------------------------------------
