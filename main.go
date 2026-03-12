@@ -1865,6 +1865,7 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 							Symbol:    dbTx.TokenSymbol,
 							Direction: dbTx.Direction,
 							TxHash:    dbTx.Signature,
+							TxType:    dbTx.TransactionType,
 						})
 						updateRedis(wa.Address, "solana", dbTx)
 						if result.RowsAffected > 0 {
@@ -2017,6 +2018,7 @@ func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(walletAddress, "tron", dbTx)
 				if result.RowsAffected > 0 {
@@ -2166,6 +2168,7 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo, txTypeByHash map
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2300,6 +2303,7 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 					Symbol:    "native",
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2433,6 +2437,7 @@ func processMoralisErc20Approval(approval MoralisErc20Approval, txMap map[string
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 			}
@@ -2550,6 +2555,7 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 					Symbol:    dbTx.TokenSymbol,
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2692,6 +2698,7 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 					Symbol:    "BTC",
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
 				})
 				updateRedis(wa.Address, "btc", dbTx)
 				if result.RowsAffected > 0 {
@@ -3439,6 +3446,7 @@ type NotificationParams struct {
 	Symbol    string
 	Direction string
 	TxHash    string
+	TxType    string
 	Extras    map[string]string
 }
 
@@ -3449,6 +3457,7 @@ func triggerNotification(params NotificationParams) {
 	symbol := params.Symbol
 	direction := params.Direction
 	txHash := params.TxHash
+	txType := params.TxType
 	extras := params.Extras
 
 	if symbol == "" || symbol == "native" {
@@ -3497,6 +3506,7 @@ func triggerNotification(params NotificationParams) {
 			"chain":     chain,
 			"direction": direction,
 			"tx_hash":   txHash,
+			"tx_type":   txType,
 			"type":      "transaction_alert",
 		}
 
