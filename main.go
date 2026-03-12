@@ -189,17 +189,32 @@ type UserBalance struct {
 
 // WalletAddress maps to the `wallet_addresses` table for wallet_id lookup.
 type WalletAddress struct {
-	ID             int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	WalletID       string    `gorm:"column:wallet_id;type:char(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index"`
-	ChainID        string    `gorm:"column:chain_id;type:varchar(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index;uniqueIndex:uq_chain_address"`
-	IndexN         int64     `gorm:"column:index_n;not null;uniqueIndex:uq_wallet_chain_index"`
-	Address        string    `gorm:"column:address;type:varchar(128);not null;uniqueIndex:uq_chain_address"`
-	DerivationPath string    `gorm:"column:derivation_path;type:varchar(255)"`
-	AddressHex     string    `gorm:"column:address_hex;type:varchar(255)"`
-	CreatedAt      time.Time `gorm:"column:created_at"`
-	UpdatedAt      time.Time `gorm:"column:updated_at"`
-	Label          string    `gorm:"column:label;type:varchar(255);not null"`
-	Active         bool      `gorm:"column:active;type:tinyint(1);not null;default:1"`
+	ID             int64     `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	WalletID       string    `gorm:"column:wallet_id;type:char(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index,priority:1;uniqueIndex:uq_wallet_chain_address,priority:1" json:"wallet_id"`
+	Wallet         Wallet    `gorm:"constraint:OnDelete:CASCADE" json:"-"`
+	ChainID        string    `gorm:"column:chain_id;size:64;not null;index:idx_addr_wallet_chain;index:idx_chain_address,priority:1;uniqueIndex:uq_wallet_chain_index,priority:2;uniqueIndex:uq_wallet_chain_address,priority:2" json:"chain_id"`
+	IndexN         int       `gorm:"column:index_n;not null;uniqueIndex:uq_wallet_chain_index,priority:3" json:"index_n"`
+	Address        string    `gorm:"column:address;size:128;not null;index:idx_chain_address,priority:2;uniqueIndex:uq_wallet_chain_address,priority:3" json:"address"`
+	DerivationPath *string   `gorm:"column:derivation_path;size:255" json:"derivation_path"`
+	AddressHex     *string   `gorm:"column:address_hex;size:255" json:"address_hex"`
+	CreatedAt      time.Time `gorm:"column:created_at;autoCreateTime;type:timestamp" json:"created_at"`
+	UpdatedAt      time.Time `gorm:"column:updated_at;autoUpdateTime;type:timestamp" json:"updated_at"`
+	Label          string    `gorm:"column:label;size:255;not null" json:"label"`
+	Active         bool      `gorm:"column:active;not null;default:true" json:"active"`
+}
+
+type Wallet struct {
+	WalletID           string          `gorm:"column:wallet_id;type:char(64);primaryKey" json:"wallet_id"`
+	Label              string          `gorm:"column:label;size:255;not null" json:"label"`
+	CreatedAt          time.Time       `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt          time.Time       `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+	Addresses          []WalletAddress `gorm:"constraint:OnDelete:CASCADE" json:"addresses"`
+	Active             bool            `gorm:"column:active;not null;default:true" json:"active"`
+	IsPrivateKeyImport bool            `gorm:"column:is_private_key_import;not null;default:false" json:"is_private_key_import"`
+}
+
+func (Wallet) TableName() string {
+	return "wallets"
 }
 
 // UserWalletDevice represents the link between a WalletID and a physical device (iOS/Android)
@@ -539,7 +554,6 @@ func initDatabase() {
 		log.Fatalf("Failed to connect to db: %v", err)
 	}
 
-	// AutoMigrate tables to ensure they exist
 	if err := db.AutoMigrate(
 		&WalletTransactionHistory{},
 		&EvmTransactionHistory{},
@@ -580,6 +594,45 @@ func initRedis() {
 	} else {
 		log.Println("Connected to Redis")
 	}
+}
+func AutoMigrate(gdb *gorm.DB) error {
+	if gdb == nil {
+		return fmt.Errorf("db is nil")
+	}
+	orig := gdb.Config.DisableForeignKeyConstraintWhenMigrating
+	gdb.Config.DisableForeignKeyConstraintWhenMigrating = true
+	err := gdb.AutoMigrate(
+		&Wallet{},
+		&WalletAddress{},
+		&UserBalance{},
+		&UserWalletDevice{},
+		&EvmTransactionHistory{},
+		&SolTransactionHistory{},
+	)
+	gdb.Config.DisableForeignKeyConstraintWhenMigrating = orig
+	if err != nil {
+		return err
+	}
+
+	// Verify crucial column addition for Wallet table
+	if !gdb.Migrator().HasColumn(&Wallet{}, "is_private_key_import") {
+		return fmt.Errorf("migration failed: column is_private_key_import missing in wallets table")
+	}
+
+	// Migration: allow the same chain/address to exist across different wallet IDs.
+	// Previous schema enforced global uniqueness on (chain_id, address) via uq_chain_address.
+	if gdb.Migrator().HasIndex(&WalletAddress{}, "uq_chain_address") {
+		if err := gdb.Migrator().DropIndex(&WalletAddress{}, "uq_chain_address"); err != nil {
+			return fmt.Errorf("failed to drop legacy index uq_chain_address: %w", err)
+		}
+	}
+	if !gdb.Migrator().HasIndex(&WalletAddress{}, "uq_wallet_chain_address") {
+		if err := gdb.Migrator().CreateIndex(&WalletAddress{}, "uq_wallet_chain_address"); err != nil {
+			return fmt.Errorf("failed to create index uq_wallet_chain_address: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ---------------------------------------------------------
