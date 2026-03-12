@@ -3195,7 +3195,7 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 		log.Printf("[BALANCE] read-after failed for wallet_id=%s address=%s chain_id=%s token=%s: %v", walletID, address, chainID, tokenAddress, err)
 	}
 
-	log.Printf("[BALANCE] updated wallet_id=%s address=%s chain_id=%s token=%s delta=%s before=%s after=%s", walletID, address, chainID, tokenAddress, delta, beforeBalance, afterBalance)
+	log.Printf("[USER_BALANCE] wallet_id=%s chain_id=%s address=%s token=%s before=%s delta=%s after=%s", walletID, chainID, address, tokenAddress, beforeBalance, delta, afterBalance)
 
 	updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress)
 	return nil
@@ -3203,14 +3203,14 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 
 func logTxHistoryResult(tag, table, wallet, chain, txHash, direction, amount string, rowsAffected int64, err error) {
 	if err != nil {
-		log.Printf("[%s] DB Error table=%s wallet=%s chain=%s tx=%s err=%v", tag, table, wallet, chain, txHash, err)
+		log.Printf("[TX][%s] status=error table=%s wallet=%s chain=%s tx=%s err=%v", tag, table, wallet, chain, txHash, err)
 		return
 	}
 	if rowsAffected > 0 {
-		log.Printf("[%s] DB Inserted table=%s wallet=%s chain=%s tx=%s direction=%s amount=%s", tag, table, wallet, chain, txHash, direction, amount)
+		log.Printf("[TX][%s] status=added table=%s wallet=%s chain=%s tx=%s direction=%s amount=%s", tag, table, wallet, chain, txHash, direction, amount)
 		return
 	}
-	log.Printf("[%s] DB Exists table=%s wallet=%s chain=%s tx=%s direction=%s amount=%s", tag, table, wallet, chain, txHash, direction, amount)
+	log.Printf("[TX][%s] status=not_added_exists table=%s wallet=%s chain=%s tx=%s direction=%s amount=%s", tag, table, wallet, chain, txHash, direction, amount)
 }
 
 func updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress string) {
@@ -3560,7 +3560,6 @@ type NotificationParams struct {
 }
 
 func triggerNotification(params NotificationParams) {
-	start := time.Now()
 	address := params.Address
 	chain := params.Chain
 	amount := params.Amount
@@ -3573,9 +3572,9 @@ func triggerNotification(params NotificationParams) {
 	source := params.Source
 	rows := params.Rows
 
-	log.Printf("[Notification][TRACE] Start tx=%s chain=%s address=%s direction=%s source=%s rows_affected=%d", txHash, chain, address, direction, source, rows)
-	if rows == 0 {
-		log.Printf("[Notification][TRACE] Duplicate tx record detected (rows_affected=0), notification fanout still runs tx=%s chain=%s address=%s", txHash, chain, address)
+	txStatus := "not_added_exists"
+	if rows > 0 {
+		txStatus = "added"
 	}
 
 	if symbol == "" || symbol == "native" {
@@ -3590,12 +3589,11 @@ func triggerNotification(params NotificationParams) {
 	var walletAddrs []WalletAddress
 	err := db.Where("address = ? AND chain_id = ?", normalizeAddress(chain, address), chainID).Find(&walletAddrs).Error
 	if err != nil {
-		log.Printf("[Notification] DB error looking up wallet for %s: %s %v", address, chainID, err)
+		log.Printf("[NOTIFY] tx_status=%s tx=%s chain=%s address=%s source=%s status=wallet_lookup_error err=%v", txStatus, txHash, chain, address, source, err)
 		return
 	}
-	log.Printf("[Notification] Found %d wallet(s) for %s on chain %s", len(walletAddrs), address, chain)
 	if len(walletAddrs) == 0 {
-		log.Printf("[Notification] No wallet found for %s on chain %s", address, chain)
+		log.Printf("[NOTIFY] tx_status=%s tx=%s chain=%s address=%s source=%s status=skipped_no_wallet", txStatus, txHash, chain, address, source)
 		return
 	}
 
@@ -3607,13 +3605,10 @@ func triggerNotification(params NotificationParams) {
 	// 2. Broadcast to all devices linked to these WalletIDs
 	for _, wa := range walletAddrs {
 		var devices []UserWalletDevice
-		deviceQueryStart := time.Now()
 		if err := db.Where("wallet_id = ?", wa.WalletID).Find(&devices).Error; err != nil {
-			log.Printf("[Notification][TRACE] Device lookup failed wallet_id=%s chain=%s err=%v", wa.WalletID, chain, err)
+			log.Printf("[NOTIFY] tx_status=%s tx=%s chain=%s address=%s source=%s wallet_id=%s status=device_lookup_error err=%v", txStatus, txHash, chain, address, source, wa.WalletID, err)
 			continue
 		}
-		log.Printf("[Notification][TRACE] Device lookup wallet_id=%s chain=%s devices=%d duration=%s", wa.WalletID, chain, len(devices), time.Since(deviceQueryStart))
-		log.Printf("[Notification] Sending to device %s on chain %s", devices, chain)
 		totalDevices += len(devices)
 
 		title := "Transaction Detected"
@@ -3651,9 +3646,7 @@ func triggerNotification(params NotificationParams) {
 		}
 
 		for _, dev := range devices {
-			sendStart := time.Now()
 			err := SendPushNotification(dev.DeviceToken, dev.DeviceType, title, body, data)
-			sendDuration := time.Since(sendStart)
 
 			// Record in DB
 			logEntry := NotificationLog{
@@ -3672,25 +3665,26 @@ func triggerNotification(params NotificationParams) {
 				sendFailed++
 				logEntry.Status = "failed"
 				logEntry.ErrorMsg = err.Error()
-				log.Printf("[Notification] Failed to send to %s: %v", dev.DeviceToken, err)
-				log.Printf("[Notification][TRACE] Push failed token=%s type=%s duration=%s tx=%s chain=%s", dev.DeviceToken, dev.DeviceType, sendDuration, txHash, chain)
 				if strings.Contains(err.Error(), ErrTokenInvalid) {
 					invalidToken++
-					log.Printf("[Notification] Purging invalid token: %s", dev.DeviceToken)
 					//db.Where("device_token = ?", dev.DeviceToken).Delete(&UserWalletDevice{})
 				}
 			} else {
 				sendSuccess++
-				log.Printf("[Notification] Successfully triggered for %s (%s)", address, direction)
-				log.Printf("[Notification][TRACE] Push success token=%s type=%s duration=%s tx=%s chain=%s", dev.DeviceToken, dev.DeviceType, sendDuration, txHash, chain)
 			}
-			logWriteStart := time.Now()
 			if err := db.Create(&logEntry).Error; err != nil {
-				log.Printf("[Notification][TRACE] notification_logs insert failed token=%s tx=%s err=%v", dev.DeviceToken, txHash, err)
-			} else {
-				log.Printf("[Notification][TRACE] notification_logs insert token=%s tx=%s status=%s duration=%s", dev.DeviceToken, txHash, logEntry.Status, time.Since(logWriteStart))
+				log.Printf("[NOTIFY] tx_status=%s tx=%s chain=%s address=%s source=%s status=notification_log_write_error wallet_id=%s err=%v", txStatus, txHash, chain, address, source, wa.WalletID, err)
 			}
 		}
 	}
-	log.Printf("[Notification][TRACE] Summary tx=%s chain=%s address=%s source=%s rows_affected=%d wallets=%d devices=%d success=%d failed=%d invalid_tokens=%d total_duration=%s", txHash, chain, address, source, rows, len(walletAddrs), totalDevices, sendSuccess, sendFailed, invalidToken, time.Since(start))
+	status := "sent"
+	switch {
+	case totalDevices == 0:
+		status = "skipped_no_device"
+	case sendSuccess == 0 && sendFailed > 0:
+		status = "failed"
+	case sendFailed > 0:
+		status = "partial"
+	}
+	log.Printf("[NOTIFY] tx_status=%s tx=%s chain=%s address=%s source=%s status=%s wallets=%d devices=%d sent=%d failed=%d invalid_tokens=%d", txStatus, txHash, chain, address, source, status, len(walletAddrs), totalDevices, sendSuccess, sendFailed, invalidToken)
 }

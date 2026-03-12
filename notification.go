@@ -182,13 +182,11 @@ func sendAPNsNotification(ctx context.Context, token string, title, body string,
 
 	if res.StatusCode != 200 {
 		if res.Reason == apns2.ReasonBadDeviceToken || res.Reason == apns2.ReasonUnregistered {
-			log.Printf("[Notification] Removing invalid APNS token: %s", token)
 			return fmt.Errorf("%s: %s", ErrTokenInvalid, res.Reason)
 		}
 		return fmt.Errorf("APNs error %d: %s", res.StatusCode, res.Reason)
 	}
 
-	log.Printf("[Notification] APNs Sent: %s", token)
 	return nil
 }
 
@@ -212,13 +210,11 @@ func sendFCMNotification(ctx context.Context, token string, title, body string, 
 	_, err := notifyService.fcmClient.Send(ctx, message)
 	if err != nil {
 		if messaging.IsUnregistered(err) {
-			log.Printf("[Notification] Removing invalid FCM token: %s", token)
 			return fmt.Errorf("%s: unregistered", ErrTokenInvalid)
 		}
 
 		return fmt.Errorf("FCM error: %v", err)
 	}
 
-	log.Printf("[Notification] FCM Sent: %s", token)
 	return nil
 }
