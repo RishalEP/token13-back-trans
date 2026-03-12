@@ -2965,29 +2965,37 @@ func updateUserBalanceForAddress(chainID, address, tokenAddress, delta string) {
 func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 	normalizedAddr := normalizeAddress(chainID, address)
 	addrCandidates := []string{normalizedAddr}
+	log.Printf("[ADDR_RESOLVE] start chain_id=%s input_address=%s normalized_address=%s", chainID, address, normalizedAddr)
 
 	if strings.EqualFold(chainID, "tron") {
 		if base58Addr, err := HexToTronAddress(normalizedAddr); err == nil {
 			if base58Addr != "" && !contains(addrCandidates, base58Addr) {
 				addrCandidates = append(addrCandidates, base58Addr)
 			}
+		} else {
+			log.Printf("[ADDR_RESOLVE] tron hex->base58 conversion skipped chain_id=%s normalized_address=%s err=%v", chainID, normalizedAddr, err)
 		}
 	}
 
 	chainCandidates := getChainSynonyms(chainID)
+	log.Printf("[ADDR_RESOLVE] candidates chain_id=%s chains=%v addresses=%v", chainID, chainCandidates, addrCandidates)
 
 	for _, chain := range chainCandidates {
 		for _, addr := range addrCandidates {
+			log.Printf("[ADDR_RESOLVE] querying chain_candidate=%s address_candidate=%s", chain, addr)
 			var rows []WalletAddress
 			if err := db.Where("LOWER(chain_id) = LOWER(?) AND (LOWER(address) = LOWER(?) OR LOWER(address_hex) = LOWER(?))", chain, addr, addr).Find(&rows).Error; err != nil {
+				log.Printf("[ADDR_RESOLVE] query_error chain_candidate=%s address_candidate=%s err=%v", chain, addr, err)
 				return nil, err
 			}
 			if len(rows) > 0 {
+				log.Printf("[ADDR_RESOLVE] matched chain_candidate=%s address_candidate=%s rows=%d", chain, addr, len(rows))
 				return rows, nil
 			}
 		}
 	}
 
+	log.Printf("[ADDR_RESOLVE] no_match chain_id=%s input_address=%s", chainID, address)
 	return nil, nil
 }
 
