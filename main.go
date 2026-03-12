@@ -691,6 +691,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for i, currentPayload := range payloads {
+		itemStart := time.Now()
 		var envelope map[string]json.RawMessage
 		if err := json.Unmarshal(currentPayload, &envelope); err != nil {
 			log.Printf("[REQUEST %s] Failure: JSON decode error (item %d): %v", reqID, i, err)
@@ -709,7 +710,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			chainInfo := chainInfoFromQuickNodeNetwork(payload.Metadata.Network)
 			log.Printf("[REQUEST %s] Starting processing (item %d): type=quicknode chain=%s network=%s transfers=%d", reqID, i, chainInfo.Chain, payload.Metadata.Network, len(payload.Transfers))
 			handleQuickNodePayload(payload)
-			log.Printf("[REQUEST %s] Finished processing QuickNode payload (item %d)", reqID, i)
+			log.Printf("[REQUEST %s] Finished processing QuickNode payload (item %d) Duration=%s", reqID, i, time.Since(itemStart))
 		case envelope["confirmed"] != nil && envelope["chainId"] != nil:
 			var payload MoralisEvmPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
@@ -720,7 +721,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			chainInfo := chainInfoFromMoralisChainId(payload.ChainId)
 			log.Printf("[REQUEST %s] Starting processing (item %d): type=moralis chain=%s chainId=%s native=%d erc20=%d", reqID, i, chainInfo.Chain, payload.ChainId, len(payload.Txs), len(payload.Erc20Transfers))
 			handleMoralisPayload(payload)
-			log.Printf("[REQUEST %s] Finished processing Moralis payload (item %d)", reqID, i)
+			log.Printf("[REQUEST %s] Finished processing Moralis payload (item %d) Duration=%s", reqID, i, time.Since(itemStart))
 		case envelope["transactions"] != nil:
 			var payload QuickNodeBtcPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
@@ -730,7 +731,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Printf("[REQUEST %s] Starting processing (item %d): type=btc count=%d", reqID, i, len(payload.Transactions))
 			handleBtcPayload(payload)
-			log.Printf("[REQUEST %s] Finished processing BTC payload (item %d)", reqID, i)
+			log.Printf("[REQUEST %s] Finished processing BTC payload (item %d) Duration=%s", reqID, i, time.Since(itemStart))
 		case envelope["matches"] != nil:
 			var payload QuickNodeSolanaPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
@@ -740,7 +741,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Printf("[REQUEST %s] Starting processing (item %d): type=solana slot=%d matches=%d", reqID, i, payload.Slot, len(payload.Matches))
 			handleSolanaPayload(payload)
-			log.Printf("[REQUEST %s] Finished processing Solana payload (item %d)", reqID, i)
+			log.Printf("[REQUEST %s] Finished processing Solana payload (item %d) Duration=%s", reqID, i, time.Since(itemStart))
 		default:
 			if envelope["message"] != nil {
 				msg, _ := envelope["message"]
@@ -1866,6 +1867,8 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 							Direction: dbTx.Direction,
 							TxHash:    dbTx.Signature,
 							TxType:    dbTx.TransactionType,
+							Source:    "sol_transaction_histories",
+							Rows:      result.RowsAffected,
 						})
 						updateRedis(wa.Address, "solana", dbTx)
 						if result.RowsAffected > 0 {
@@ -2019,6 +2022,8 @@ func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
+					Source:    "tron_transaction_histories",
+					Rows:      result.RowsAffected,
 				})
 				updateRedis(walletAddress, "tron", dbTx)
 				if result.RowsAffected > 0 {
@@ -2170,6 +2175,8 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo, txTypeByHash map
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
 					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
+					Source:    "evm_transaction_histories",
+					Rows:      result.RowsAffected,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2306,6 +2313,8 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
 					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
+					Source:    "evm_transaction_histories",
+					Rows:      result.RowsAffected,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2441,6 +2450,8 @@ func processMoralisErc20Approval(approval MoralisErc20Approval, txMap map[string
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
 					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
+					Source:    "evm_transaction_histories",
+					Rows:      result.RowsAffected,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 			}
@@ -2560,6 +2571,8 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
 					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
+					Source:    "evm_transaction_histories",
+					Rows:      result.RowsAffected,
 				})
 				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
 				if result.RowsAffected > 0 {
@@ -2703,6 +2716,8 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 					Direction: dbTx.Direction,
 					TxHash:    dbTx.TxHash,
 					TxType:    dbTx.TransactionType,
+					Source:    "btc_transaction_histories",
+					Rows:      result.RowsAffected,
 				})
 				updateRedis(wa.Address, "btc", dbTx)
 				if result.RowsAffected > 0 {
@@ -3461,9 +3476,12 @@ type NotificationParams struct {
 	TxType    string
 	ChainID   string
 	Extras    map[string]string
+	Source    string
+	Rows      int64
 }
 
 func triggerNotification(params NotificationParams) {
+	start := time.Now()
 	address := params.Address
 	chain := params.Chain
 	amount := params.Amount
@@ -3473,6 +3491,13 @@ func triggerNotification(params NotificationParams) {
 	txType := params.TxType
 	pChainID := params.ChainID
 	extras := params.Extras
+	source := params.Source
+	rows := params.Rows
+
+	log.Printf("[Notification][TRACE] Start tx=%s chain=%s address=%s direction=%s source=%s rows_affected=%d", txHash, chain, address, direction, source, rows)
+	if rows == 0 {
+		log.Printf("[Notification][TRACE] Duplicate tx record detected (rows_affected=0), notification fanout still runs tx=%s chain=%s address=%s", txHash, chain, address)
+	}
 
 	if symbol == "" || symbol == "native" {
 		symbol = nativeTokenAddress(chain)
@@ -3495,11 +3520,22 @@ func triggerNotification(params NotificationParams) {
 		return
 	}
 
+	totalDevices := 0
+	sendSuccess := 0
+	sendFailed := 0
+	invalidToken := 0
+
 	// 2. Broadcast to all devices linked to these WalletIDs
 	for _, wa := range walletAddrs {
 		var devices []UserWalletDevice
-		db.Where("wallet_id = ?", wa.WalletID).Find(&devices)
+		deviceQueryStart := time.Now()
+		if err := db.Where("wallet_id = ?", wa.WalletID).Find(&devices).Error; err != nil {
+			log.Printf("[Notification][TRACE] Device lookup failed wallet_id=%s chain=%s err=%v", wa.WalletID, chain, err)
+			continue
+		}
+		log.Printf("[Notification][TRACE] Device lookup wallet_id=%s chain=%s devices=%d duration=%s", wa.WalletID, chain, len(devices), time.Since(deviceQueryStart))
 		log.Printf("[Notification] Sending to device %s on chain %s", devices, chain)
+		totalDevices += len(devices)
 
 		title := "Transaction Detected"
 		body := ""
@@ -3536,7 +3572,9 @@ func triggerNotification(params NotificationParams) {
 		}
 
 		for _, dev := range devices {
+			sendStart := time.Now()
 			err := SendPushNotification(dev.DeviceToken, dev.DeviceType, title, body, data)
+			sendDuration := time.Since(sendStart)
 
 			// Record in DB
 			logEntry := NotificationLog{
@@ -3552,17 +3590,28 @@ func triggerNotification(params NotificationParams) {
 			}
 
 			if err != nil {
+				sendFailed++
 				logEntry.Status = "failed"
 				logEntry.ErrorMsg = err.Error()
 				log.Printf("[Notification] Failed to send to %s: %v", dev.DeviceToken, err)
+				log.Printf("[Notification][TRACE] Push failed token=%s type=%s duration=%s tx=%s chain=%s", dev.DeviceToken, dev.DeviceType, sendDuration, txHash, chain)
 				if strings.Contains(err.Error(), ErrTokenInvalid) {
+					invalidToken++
 					log.Printf("[Notification] Purging invalid token: %s", dev.DeviceToken)
 					//db.Where("device_token = ?", dev.DeviceToken).Delete(&UserWalletDevice{})
 				}
 			} else {
+				sendSuccess++
 				log.Printf("[Notification] Successfully triggered for %s (%s)", address, direction)
+				log.Printf("[Notification][TRACE] Push success token=%s type=%s duration=%s tx=%s chain=%s", dev.DeviceToken, dev.DeviceType, sendDuration, txHash, chain)
 			}
-			db.Create(&logEntry)
+			logWriteStart := time.Now()
+			if err := db.Create(&logEntry).Error; err != nil {
+				log.Printf("[Notification][TRACE] notification_logs insert failed token=%s tx=%s err=%v", dev.DeviceToken, txHash, err)
+			} else {
+				log.Printf("[Notification][TRACE] notification_logs insert token=%s tx=%s status=%s duration=%s", dev.DeviceToken, txHash, logEntry.Status, time.Since(logWriteStart))
+			}
 		}
 	}
+	log.Printf("[Notification][TRACE] Summary tx=%s chain=%s address=%s source=%s rows_affected=%d wallets=%d devices=%d success=%d failed=%d invalid_tokens=%d total_duration=%s", txHash, chain, address, source, rows, len(walletAddrs), totalDevices, sendSuccess, sendFailed, invalidToken, time.Since(start))
 }
