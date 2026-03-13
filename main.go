@@ -430,6 +430,7 @@ type SolParsedInfo struct {
 	Destination string          `json:"destination"`
 	Source      string          `json:"source"`
 	Delegate    string          `json:"delegate"`
+	Mint        string          `json:"mint"`
 	Lamports    interface{}     `json:"lamports"` // Can be string or number
 	Amount      interface{}     `json:"amount"`   // For SPL tokens
 	TokenAmount *SolTokenAmount `json:"tokenAmount"`
@@ -1655,6 +1656,22 @@ func solanaTokenBalanceOwnerByAccountIndex(balances []SolTokenBalance, accountIn
 	return ""
 }
 
+func solanaTokenBalanceMintByAccountIndex(balances []SolTokenBalance, accountIndex int) string {
+	if accountIndex < 0 {
+		return ""
+	}
+	for _, balance := range balances {
+		if balance.AccountIndex != accountIndex {
+			continue
+		}
+		mint := strings.TrimSpace(balance.Mint)
+		if mint != "" {
+			return mint
+		}
+	}
+	return ""
+}
+
 func solanaTokenAccountOwner(match SolMatch, tokenAccount string, preferPostBalance bool) string {
 	accountIndex := solanaAccountIndexForPubkey(match, tokenAccount)
 	if accountIndex < 0 {
@@ -1672,6 +1689,25 @@ func solanaTokenAccountOwner(match SolMatch, tokenAccount string, preferPostBala
 		return owner
 	}
 	return solanaTokenBalanceOwnerByAccountIndex(match.Meta.PostTokenBalances, accountIndex)
+}
+
+func solanaTokenAccountMint(match SolMatch, tokenAccount string, preferPostBalance bool) string {
+	accountIndex := solanaAccountIndexForPubkey(match, tokenAccount)
+	if accountIndex < 0 {
+		return ""
+	}
+
+	if preferPostBalance {
+		if mint := solanaTokenBalanceMintByAccountIndex(match.Meta.PostTokenBalances, accountIndex); mint != "" {
+			return mint
+		}
+		return solanaTokenBalanceMintByAccountIndex(match.Meta.PreTokenBalances, accountIndex)
+	}
+
+	if mint := solanaTokenBalanceMintByAccountIndex(match.Meta.PreTokenBalances, accountIndex); mint != "" {
+		return mint
+	}
+	return solanaTokenBalanceMintByAccountIndex(match.Meta.PostTokenBalances, accountIndex)
 }
 
 func isSolanaSwapTransaction(match SolMatch) bool {
@@ -1818,8 +1854,10 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 			info := parsed.Info
 			isTokenInstruction := isSolanaTokenProgram(inst.ProgramId) || strings.EqualFold(strings.TrimSpace(inst.Program), "spl-token")
 
-			from := strings.TrimSpace(info.Source)
-			to := strings.TrimSpace(info.Destination)
+			sourceTokenAccount := strings.TrimSpace(info.Source)
+			destinationTokenAccount := strings.TrimSpace(info.Destination)
+			from := sourceTokenAccount
+			to := destinationTokenAccount
 			if isTokenInstruction && (parsedType == "transfer" || parsedType == "transferchecked") {
 				if sourceOwner := solanaTokenAccountOwner(match, from, false); sourceOwner != "" {
 					from = sourceOwner
@@ -1887,6 +1925,20 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 				continue
 			}
 			txType := classifySolanaInstructionTxType(inst, parsed, isApprovalTx, isSwapTx, isNftTx)
+			tokenAddr := inst.ProgramId
+			if isTokenInstruction && (parsedType == "transfer" || parsedType == "transferchecked") {
+				tokenAddr = strings.TrimSpace(info.Mint)
+				if tokenAddr == "" {
+					tokenAddr = solanaTokenAccountMint(match, sourceTokenAccount, false)
+				}
+				if tokenAddr == "" {
+					tokenAddr = solanaTokenAccountMint(match, destinationTokenAccount, true)
+				}
+				if tokenAddr == "" {
+					tokenAddr = inst.ProgramId
+				}
+				log.Printf("[SOLANA_TOKEN] signature=%s parsed_type=%s from_owner=%s to_owner=%s source_token_account=%s destination_token_account=%s mint=%s amount=%s", signature, parsedType, from, to, sourceTokenAccount, destinationTokenAccount, tokenAddr, amountStr)
+			}
 
 			wallets := []string{from, to}
 			insertedAny := false
@@ -1923,7 +1975,7 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 						Direction:          direction,
 						CreatedAt:          time.Now(),
 						Standard:           inst.Program,
-						ContractAddress:    inst.ProgramId,
+						ContractAddress:    tokenAddr,
 						TokenDecimal:       uint8(decimals),
 					}
 
@@ -1958,7 +2010,6 @@ func processSolanaTransaction(match SolMatch, slot int64, blockTime int64) {
 			}
 
 			if insertedAny && (parsedType == "transfer" || parsedType == "transferchecked") {
-				tokenAddr := inst.ProgramId
 				if inst.Program == "system" {
 					// Native SOL balance change is handled via pre/post balances below
 					// We only process it here for transaction history records
