@@ -61,6 +61,9 @@ var (
 		"0x095ea7b3": {}, // approve(address,uint256)
 		"0xa22cb465": {}, // setApprovalForAll(address,bool)
 	}
+	evmSwapMethodSelectors = map[string]struct{}{
+		"0x14d08fca": {}, // onChainSwaps() - Rango router style aggregator swap
+	}
 )
 
 // ---------------------------------------------------------
@@ -857,7 +860,7 @@ func handleMoralisPayload(payload MoralisEvmPayload) {
 	blockNumber := parseInt64(payload.Block.Number)
 	blockTime := parseInt64(payload.Block.Timestamp)
 
-	log.Printf("Received Moralis Batch. Chain: %s | Native Tx: %d | ERC20: %d", chainInfo.Chain, len(payload.Txs), len(payload.Erc20Transfers))
+	log.Printf("Received Moralis Batch. Chain: %s | Native Tx: %d | Internal: %d | ERC20: %d", chainInfo.Chain, len(payload.Txs), len(payload.TxsInternal), len(payload.Erc20Transfers))
 
 	txMap := make(map[string]MoralisTx, len(payload.Txs))
 	for _, tx := range payload.Txs {
@@ -870,6 +873,10 @@ func handleMoralisPayload(payload MoralisEvmPayload) {
 
 	for _, tx := range payload.Txs {
 		processMoralisNativeTx(tx, chainInfo, blockNumber, blockTime, txTypeByHash)
+	}
+
+	for _, internalTx := range payload.TxsInternal {
+		processMoralisInternalTx(internalTx, txMap, chainInfo, blockNumber, blockTime, txTypeByHash)
 	}
 
 	for _, approval := range payload.Erc20Approvals {
@@ -987,6 +994,11 @@ func isNftStandard(standard string) bool {
 
 func isEvmApprovalMethod(methodID string) bool {
 	_, ok := evmApprovalMethodSelectors[normalizeMethodID(methodID)]
+	return ok
+}
+
+func isEvmSwapMethod(methodID string) bool {
+	_, ok := evmSwapMethodSelectors[normalizeMethodID(methodID)]
 	return ok
 }
 
@@ -1334,6 +1346,7 @@ func classifyQuickNodeEvmTxType(tx Transfer) string {
 
 type moralisTxSummary struct {
 	hasApproval       bool
+	hasSwapHint       bool
 	hasNftTransfer    bool
 	hasTokenTransfer  bool
 	hasNativeTransfer bool
@@ -1354,6 +1367,28 @@ func ensureMoralisTxSummary(summaryByHash map[string]*moralisTxSummary, hash str
 	return summary
 }
 
+func classifyMoralisSummary(summary *moralisTxSummary) string {
+	if summary == nil {
+		return txTypeSmartContractInteraction
+	}
+	if summary.hasApproval {
+		return txTypeApproval
+	}
+	if summary.hasSwapHint || hasOnePositiveAndOneNegativeDelta(summary.deltaByAsset) {
+		return txTypeSwap
+	}
+	if summary.hasNftTransfer {
+		return txTypeNftTransfer
+	}
+	if summary.hasTokenTransfer {
+		return txTypeTokenTransfer
+	}
+	if summary.hasNativeTransfer && summary.hasEmptyInput && !summary.hasContractInput {
+		return txTypeNativeTransfer
+	}
+	return txTypeSmartContractInteraction
+}
+
 func classifyMoralisTxTypes(payload MoralisEvmPayload, _ evmChainInfo) map[string]string {
 	summaryByHash := make(map[string]*moralisTxSummary)
 	const nativeAssetKey = "__native__"
@@ -1367,6 +1402,9 @@ func classifyMoralisTxTypes(payload MoralisEvmPayload, _ evmChainInfo) map[strin
 		summary.sender = strings.ToLower(strings.TrimSpace(tx.FromAddress))
 		if isApprovalInput(tx.Input) {
 			summary.hasApproval = true
+		}
+		if isEvmSwapMethod(methodIDFromInput(tx.Input)) {
+			summary.hasSwapHint = true
 		}
 		if isInputEmpty(tx.Input) {
 			summary.hasEmptyInput = true
@@ -1390,6 +1428,9 @@ func classifyMoralisTxTypes(payload MoralisEvmPayload, _ evmChainInfo) map[strin
 		summary := ensureMoralisTxSummary(summaryByHash, hash)
 		if isEvmApprovalEventTopic(logItem.Topic0) {
 			summary.hasApproval = true
+		}
+		if isEvmSwapEventTopic(logItem.Topic0) {
+			summary.hasSwapHint = true
 		}
 		if isErc721TransferLog(logItem) || isErc1155TransferLog(logItem.Topic0) {
 			summary.hasNftTransfer = true
@@ -1475,27 +1516,7 @@ func classifyMoralisTxTypes(payload MoralisEvmPayload, _ evmChainInfo) map[strin
 
 	txTypeByHash := make(map[string]string, len(summaryByHash))
 	for hash, summary := range summaryByHash {
-		if summary.hasApproval {
-			txTypeByHash[hash] = txTypeApproval
-			continue
-		}
-		if hasOnePositiveAndOneNegativeDelta(summary.deltaByAsset) {
-			txTypeByHash[hash] = txTypeSwap
-			continue
-		}
-		if summary.hasNftTransfer {
-			txTypeByHash[hash] = txTypeNftTransfer
-			continue
-		}
-		if summary.hasTokenTransfer {
-			txTypeByHash[hash] = txTypeTokenTransfer
-			continue
-		}
-		if summary.hasNativeTransfer && summary.hasEmptyInput && !summary.hasContractInput {
-			txTypeByHash[hash] = txTypeNativeTransfer
-			continue
-		}
-		txTypeByHash[hash] = txTypeSmartContractInteraction
+		txTypeByHash[hash] = classifyMoralisSummary(summary)
 	}
 
 	return txTypeByHash
@@ -2465,6 +2486,153 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 	}
 }
 
+func processMoralisInternalTx(internalTx MoralisInternalTx, txMap map[string]MoralisTx, chainInfo evmChainInfo, blockNumber int64, blockTime int64, txTypeByHash map[string]string) {
+	hash := strings.TrimSpace(internalTx.TransactionHash)
+	if hash == "" {
+		return
+	}
+
+	valueInt := parseBigInt(internalTx.Value)
+	if valueInt.Sign() <= 0 {
+		return
+	}
+	amountStr := formatTokenAmount(valueInt, 18)
+
+	txRef, hasTx := txMap[strings.ToLower(hash)]
+	gasUsed := big.NewInt(0)
+	gasPrice := big.NewInt(0)
+	if hasTx {
+		gasUsed = parseBigInt(txRef.ReceiptGasUsed)
+		if gasUsed.Sign() == 0 && txRef.Gas != "" {
+			gasUsed = parseBigInt(txRef.Gas)
+		}
+		gasPrice = parseBigInt(txRef.GasPrice)
+	}
+	feeWei := new(big.Int).Mul(gasUsed, gasPrice)
+	feeNativeStr, feeUsd := computeNetworkFeeNativeAndUsd(feeWei, chainInfo)
+
+	methodID := ""
+	if hasTx {
+		methodID = methodIDFromInput(txRef.Input)
+	}
+
+	txType := txTypeSmartContractInteraction
+	if mapped, ok := txTypeByHash[strings.ToLower(hash)]; ok && mapped != "" {
+		txType = mapped
+	} else if hasTx {
+		txType = classifyMoralisNativeTxType(txRef, txTypeByHash)
+	}
+
+	wallets := []string{internalTx.From, internalTx.To}
+	insertedDeltaByAddress := map[string]string{}
+	for _, walletAddr := range wallets {
+		if walletAddr == "" {
+			continue
+		}
+
+		waList, _ := resolveWalletAddresses(chainInfo.RedisKey, walletAddr)
+		if len(waList) == 0 {
+			continue
+		}
+
+		for _, wa := range waList {
+			direction := "receive"
+			delta := amountStr
+			if strings.EqualFold(walletAddr, internalTx.From) {
+				direction = "send"
+				delta = negateAmount(amountStr)
+			}
+
+			dbTx := EvmTransactionHistory{
+				WalletAddress:    wa.Address,
+				TxHash:           hash,
+				Chain:            chainInfo.Chain,
+				BlockNumber:      blockNumber,
+				BlockTime:        blockTime,
+				FromAddress:      strings.ToLower(strings.TrimSpace(internalTx.From)),
+				ToAddress:        strings.ToLower(strings.TrimSpace(internalTx.To)),
+				Amount:           amountStr,
+				GasUsed:          gasUsed.Int64(),
+				GasPrice:         gasPrice.String(),
+				NetworkFee:       feeWei.String(),
+				NetworkFeeNative: feeNativeStr,
+				NetworkFeeUsd:    feeUsd,
+				Status:           "success",
+				TransactionType:  txType,
+				MethodId:         methodID,
+				Standard:         "native_internal",
+				Direction:        direction,
+				CreatedAt:        time.Now(),
+				GasLimit:         parseInt64(txRef.Gas),
+			}
+
+			if dbTx.TokenName == "" {
+				if chainInfo.Chain == "BASE" {
+					dbTx.TokenName = "Base"
+					dbTx.TokenSymbol = "ETH"
+				} else if chainInfo.Chain == "ETH" {
+					dbTx.TokenName = "Ethereum"
+					dbTx.TokenSymbol = "ETH"
+				} else if chainInfo.Chain == "POL" {
+					dbTx.TokenName = "Polygon"
+					dbTx.TokenSymbol = "MATIC"
+				} else if chainInfo.Chain == "BSC" {
+					dbTx.TokenName = "Binance Smart Chain"
+					dbTx.TokenSymbol = "BNB"
+				}
+			}
+
+			if chainInfo.Chain == "ETH" {
+				dbTx.ChainId = 1
+				dbTx.ChainName = "Ethereum"
+			} else if chainInfo.Chain == "POL" {
+				dbTx.ChainId = 137
+				dbTx.ChainName = "Polygon"
+			} else if chainInfo.Chain == "BASE" {
+				dbTx.ChainId = 8453
+				dbTx.ChainName = "Base"
+			} else if chainInfo.Chain == "BSC" {
+				dbTx.ChainId = 56
+				dbTx.ChainName = "BSC"
+			}
+
+			result := db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+				DoNothing: true,
+			}).Create(&dbTx)
+
+			logTxHistoryResult("MORALIS", "evm_transaction_histories", wa.Address, chainInfo.Chain, dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
+			if result.Error == nil {
+				triggerNotification(NotificationParams{
+					Address:   wa.Address,
+					Chain:     chainInfo.Chain,
+					Amount:    dbTx.Amount,
+					Symbol:    "native",
+					Direction: dbTx.Direction,
+					TxHash:    dbTx.TxHash,
+					TxType:    dbTx.TransactionType,
+					ChainID:   strconv.FormatInt(dbTx.ChainId, 10),
+					Source:    "evm_transaction_histories",
+					Rows:      result.RowsAffected,
+				})
+				updateRedis(wa.Address, chainInfo.RedisKey, dbTx)
+				if result.RowsAffected > 0 {
+					insertedDeltaByAddress[wa.Address] = delta
+				}
+			}
+		}
+	}
+
+	if len(insertedDeltaByAddress) == 0 {
+		return
+	}
+
+	tokenAddress := nativeTokenAddress(chainInfo.RedisKey)
+	for address, delta := range insertedDeltaByAddress {
+		updateUserBalanceForAddress(chainInfo.RedisKey, address, tokenAddress, delta)
+	}
+}
+
 func processMoralisErc20Approval(approval MoralisErc20Approval, txMap map[string]MoralisTx, chainInfo evmChainInfo, blockNumber int64, blockTime int64, txTypeByHash map[string]string) {
 	if approval.TransactionHash == "" {
 		return
@@ -2594,22 +2762,8 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 		return
 	}
 
-	decimals := 18
-	if transfer.TokenDecimals != "" {
-		if parsed, err := strconv.Atoi(transfer.TokenDecimals); err == nil {
-			decimals = parsed
-		}
-	}
-
-	amountStr := transfer.ValueWithDecimals
-	if amountStr == "" {
-		valueInt := parseBigInt(transfer.Value)
-		if valueInt.Sign() == 0 {
-			return
-		}
-		amountStr = formatTokenAmount(valueInt, decimals)
-	}
-	if amountStr == "" || amountStr == "0" {
+	amountStr, decimals, ok := moralisErc20TransferAmount(transfer)
+	if !ok {
 		return
 	}
 
@@ -2724,6 +2878,27 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 			updateUserBalanceForAddress(chainInfo.RedisKey, transfer.From, nativeTokenAddress(chainInfo.RedisKey), negateAmount(feeNativeStr))
 		}
 	}
+}
+
+func moralisErc20TransferAmount(transfer MoralisErc20Transfer) (string, int, bool) {
+	valueInt := parseBigInt(transfer.Value)
+	if valueInt.Sign() <= 0 {
+		return "", 0, false
+	}
+
+	decimals := 18
+	if transfer.TokenDecimals != "" {
+		if parsed, err := strconv.Atoi(transfer.TokenDecimals); err == nil {
+			decimals = parsed
+		}
+	}
+
+	amountStr := formatTokenAmount(valueInt, decimals)
+	if amountStr == "" || amountStr == "0" {
+		return "", decimals, false
+	}
+
+	return amountStr, decimals, true
 }
 
 // ---------------------------------------------------------
