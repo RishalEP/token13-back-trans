@@ -35,7 +35,19 @@ var (
 	nativePriceCacheMu  sync.Mutex
 	nativePriceCache    = map[string]priceCacheEntry{}
 	nativePriceCacheTTL = 60 * time.Second
+
+	walletResolveCacheMu         sync.RWMutex
+	walletResolveCache           = map[string]walletResolveCacheEntry{}
+	walletResolveCacheTTL        = 30 * time.Second
+	walletResolveCacheMaxEntries = 20000
+
+	enableBalanceAuditLogs = true
 )
+
+type walletResolveCacheEntry struct {
+	rows      []WalletAddress
+	expiresAt time.Time
+}
 
 const (
 	txTypeDefaultTransfer          = "SMART_CONTRACT_INTERACTION"
@@ -3288,10 +3300,25 @@ func updateUserBalanceForAddress(chainID, address, tokenAddress, delta string) {
 
 func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 	normalizedAddr := normalizeAddress(chainID, address)
+	if normalizedAddr == "" {
+		return nil, nil
+	}
+
+	chainCandidates := uniqueNonEmptyStrings(getChainSynonyms(chainID))
+	if len(chainCandidates) == 0 {
+		chainCandidates = []string{strings.TrimSpace(chainID)}
+	}
+
+	cacheKey := strings.ToLower(strings.Join(chainCandidates, ",")) + "|" + strings.ToLower(strings.TrimSpace(normalizedAddr))
+	if cachedRows, ok := walletResolveCacheLookup(cacheKey); ok {
+		return cachedRows, nil
+	}
+
 	addrCandidates := []string{normalizedAddr}
 	log.Printf("[ADDR_RESOLVE] start chain_id=%s input_address=%s normalized_address=%s", chainID, address, normalizedAddr)
 
-	if strings.EqualFold(chainID, "tron") {
+	c := strings.ToLower(strings.TrimSpace(chainID))
+	if c == "tron" || c == "tron-mainnet" || c == "trx" || c == "65" {
 		if base58Addr, err := HexToTronAddress(normalizedAddr); err == nil {
 			if base58Addr != "" && !contains(addrCandidates, base58Addr) {
 				addrCandidates = append(addrCandidates, base58Addr)
@@ -3301,22 +3328,53 @@ func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 		}
 	}
 
-	chainCandidates := getChainSynonyms(chainID)
+	addrCandidates = uniqueNonEmptyStrings(addrCandidates)
 	log.Printf("[ADDR_RESOLVE] candidates chain_id=%s chains=%v addresses=%v", chainID, chainCandidates, addrCandidates)
 
-	for _, chain := range chainCandidates {
-		for _, addr := range addrCandidates {
-			log.Printf("[ADDR_RESOLVE] querying chain_candidate=%s address_candidate=%s", chain, addr)
-			var rows []WalletAddress
-			if err := db.Where("LOWER(chain_id) = LOWER(?) AND (LOWER(address) = LOWER(?) OR LOWER(address_hex) = LOWER(?))", chain, addr, addr).Find(&rows).Error; err != nil {
-				log.Printf("[ADDR_RESOLVE] query_error chain_candidate=%s address_candidate=%s err=%v", chain, addr, err)
-				return nil, err
-			}
-			if len(rows) > 0 {
-				log.Printf("[ADDR_RESOLVE] matched chain_candidate=%s address_candidate=%s rows=%d", chain, addr, len(rows))
-				return rows, nil
-			}
-		}
+	// Fast path: exact matches keep index usage on wallet_addresses(chain_id, address).
+	var rows []WalletAddress
+	if err := db.Where("chain_id IN ? AND address IN ?", chainCandidates, addrCandidates).Find(&rows).Error; err != nil {
+		log.Printf("[ADDR_RESOLVE] query_error exact_address chain_candidates=%v address_candidates=%v err=%v", chainCandidates, addrCandidates, err)
+		return nil, err
+	}
+	if len(rows) > 0 {
+		log.Printf("[ADDR_RESOLVE] matched source=address rows=%d", len(rows))
+		walletResolveCacheStore(cacheKey, rows)
+		return rows, nil
+	}
+
+	if err := db.Where("chain_id IN ? AND address_hex IN ?", chainCandidates, addrCandidates).Find(&rows).Error; err != nil {
+		log.Printf("[ADDR_RESOLVE] query_error exact_address_hex chain_candidates=%v address_candidates=%v err=%v", chainCandidates, addrCandidates, err)
+		return nil, err
+	}
+	if len(rows) > 0 {
+		log.Printf("[ADDR_RESOLVE] matched source=address_hex rows=%d", len(rows))
+		walletResolveCacheStore(cacheKey, rows)
+		return rows, nil
+	}
+
+	// Compatibility fallback for legacy mixed-case data.
+	lowerChains := lowerCopy(chainCandidates)
+	lowerAddrs := lowerCopy(addrCandidates)
+
+	if err := db.Where("LOWER(chain_id) IN ? AND LOWER(address) IN ?", lowerChains, lowerAddrs).Find(&rows).Error; err != nil {
+		log.Printf("[ADDR_RESOLVE] query_error fallback_address chain_candidates=%v address_candidates=%v err=%v", chainCandidates, addrCandidates, err)
+		return nil, err
+	}
+	if len(rows) > 0 {
+		log.Printf("[ADDR_RESOLVE] matched source=fallback_address rows=%d", len(rows))
+		walletResolveCacheStore(cacheKey, rows)
+		return rows, nil
+	}
+
+	if err := db.Where("LOWER(chain_id) IN ? AND LOWER(address_hex) IN ?", lowerChains, lowerAddrs).Find(&rows).Error; err != nil {
+		log.Printf("[ADDR_RESOLVE] query_error fallback_address_hex chain_candidates=%v address_candidates=%v err=%v", chainCandidates, addrCandidates, err)
+		return nil, err
+	}
+	if len(rows) > 0 {
+		log.Printf("[ADDR_RESOLVE] matched source=fallback_address_hex rows=%d", len(rows))
+		walletResolveCacheStore(cacheKey, rows)
+		return rows, nil
 	}
 
 	log.Printf("[ADDR_RESOLVE] no_match chain_id=%s input_address=%s", chainID, address)
@@ -3359,6 +3417,90 @@ func contains(slice []string, val string) bool {
 	return false
 }
 
+func parseEnvBool(name string) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	switch value {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func lowerCopy(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, strings.ToLower(trimmed))
+	}
+	return out
+}
+
+func cloneWalletAddressRows(rows []WalletAddress) []WalletAddress {
+	if len(rows) == 0 {
+		return []WalletAddress{}
+	}
+	cloned := make([]WalletAddress, len(rows))
+	copy(cloned, rows)
+	return cloned
+}
+
+func walletResolveCacheLookup(key string) ([]WalletAddress, bool) {
+	now := time.Now()
+
+	walletResolveCacheMu.RLock()
+	entry, ok := walletResolveCache[key]
+	walletResolveCacheMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if now.After(entry.expiresAt) {
+		walletResolveCacheMu.Lock()
+		if current, exists := walletResolveCache[key]; exists && now.After(current.expiresAt) {
+			delete(walletResolveCache, key)
+		}
+		walletResolveCacheMu.Unlock()
+		return nil, false
+	}
+	return cloneWalletAddressRows(entry.rows), true
+}
+
+func walletResolveCacheStore(key string, rows []WalletAddress) {
+	walletResolveCacheMu.Lock()
+	if len(walletResolveCache) >= walletResolveCacheMaxEntries {
+		walletResolveCache = map[string]walletResolveCacheEntry{}
+	}
+	walletResolveCache[key] = walletResolveCacheEntry{
+		rows:      cloneWalletAddressRows(rows),
+		expiresAt: time.Now().Add(walletResolveCacheTTL),
+	}
+	walletResolveCacheMu.Unlock()
+}
+
 func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) error {
 	// Normalize all keys for case-insensitive DB operations
 	walletID = strings.TrimSpace(walletID)
@@ -3371,15 +3513,18 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 		insertBalance = "0"
 	}
 
-	beforeBalance := "0"
-	var before UserBalance
-	if err := db.Select("balance").Where(
-		"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
-		walletID, address, chainID, tokenAddress,
-	).First(&before).Error; err == nil {
-		beforeBalance = before.Balance
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		log.Printf("[BALANCE] read-before failed for wallet_id=%s address=%s chain_id=%s token=%s: %v", walletID, address, chainID, tokenAddress, err)
+	beforeBalance := ""
+	if enableBalanceAuditLogs {
+		beforeBalance = "0"
+		var before UserBalance
+		if err := db.Select("balance").Where(
+			"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
+			walletID, address, chainID, tokenAddress,
+		).First(&before).Error; err == nil {
+			beforeBalance = before.Balance
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("[BALANCE] read-before failed for wallet_id=%s address=%s chain_id=%s token=%s: %v", walletID, address, chainID, tokenAddress, err)
+		}
 	}
 
 	now := time.Now()
@@ -3410,20 +3555,24 @@ func upsertUserBalance(walletID, address, chainID, tokenAddress, delta string) e
 		return result.Error
 	}
 
-	afterBalance := "unknown"
-	var after UserBalance
-	if err := db.Select("balance").Where(
-		"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
-		walletID, address, chainID, tokenAddress,
-	).First(&after).Error; err == nil {
-		afterBalance = after.Balance
-	} else {
-		log.Printf("[BALANCE] read-after failed for wallet_id=%s address=%s chain_id=%s token=%s: %v", walletID, address, chainID, tokenAddress, err)
+	afterBalance := ""
+	if enableBalanceAuditLogs {
+		afterBalanceForLog := "unknown"
+		var after UserBalance
+		if err := db.Select("balance").Where(
+			"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
+			walletID, address, chainID, tokenAddress,
+		).First(&after).Error; err == nil {
+			afterBalance = after.Balance
+			afterBalanceForLog = after.Balance
+		} else {
+			log.Printf("[BALANCE] read-after failed for wallet_id=%s address=%s chain_id=%s token=%s: %v", walletID, address, chainID, tokenAddress, err)
+		}
+
+		log.Printf("[USER_BALANCE] wallet_id=%s chain_id=%s address=%s token=%s before=%s delta=%s after=%s", walletID, chainID, address, tokenAddress, beforeBalance, delta, afterBalanceForLog)
 	}
 
-	log.Printf("[USER_BALANCE] wallet_id=%s chain_id=%s address=%s token=%s before=%s delta=%s after=%s", walletID, chainID, address, tokenAddress, beforeBalance, delta, afterBalance)
-
-	updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress)
+	updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress, afterBalance)
 	return nil
 }
 
@@ -3439,7 +3588,7 @@ func logTxHistoryResult(tag, table, wallet, chain, txHash, direction, amount str
 	log.Printf("[TX][%s] status=not_added_exists table=%s wallet=%s chain=%s tx=%s direction=%s amount=%s", tag, table, wallet, chain, txHash, direction, amount)
 }
 
-func updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress string) {
+func updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress, balanceHint string) {
 	if rdb == nil {
 		return
 	}
@@ -3454,16 +3603,20 @@ func updateUserBalanceRedisIfExists(walletID, chainID, address, tokenAddress str
 		return
 	}
 
-	var updated UserBalance
-	if err := db.Select("balance").Where(
-		"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
-		walletID, address, chainID, tokenAddress,
-	).First(&updated).Error; err != nil {
-		log.Printf("[BALANCE] db read failed for %s (%s): %v", address, chainID, err)
-		return
+	updatedBalance := strings.TrimSpace(balanceHint)
+	if updatedBalance == "" {
+		var updated UserBalance
+		if err := db.Select("balance").Where(
+			"LOWER(wallet_id) = LOWER(?) AND LOWER(address) = LOWER(?) AND LOWER(chain_id) = LOWER(?) AND LOWER(token_address) = LOWER(?)",
+			walletID, address, chainID, tokenAddress,
+		).First(&updated).Error; err != nil {
+			log.Printf("[BALANCE] db read failed for %s (%s): %v", address, chainID, err)
+			return
+		}
+		updatedBalance = updated.Balance
 	}
 
-	if err := rdb.HSet(ctx, key, tokenAddress, updated.Balance).Err(); err != nil {
+	if err := rdb.HSet(ctx, key, tokenAddress, updatedBalance).Err(); err != nil {
 		log.Printf("[BALANCE] redis update failed for %s: %v", key, err)
 	}
 }
