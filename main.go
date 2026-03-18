@@ -4066,9 +4066,6 @@ func triggerNotification(params NotificationParams) {
 		}
 
 		finalChainID := wa.ChainID
-		if pChainID != "" {
-			finalChainID = pChainID
-		}
 
 		data := map[string]string{
 			"wallet_id": wa.WalletID,
