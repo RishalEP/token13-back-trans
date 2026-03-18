@@ -4010,7 +4010,6 @@ func triggerNotification(params NotificationParams) {
 	direction := params.Direction
 	txHash := params.TxHash
 	txType := params.TxType
-	pChainID := params.ChainID
 	extras := params.Extras
 	source := params.Source
 	rows := params.Rows
