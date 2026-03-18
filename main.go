@@ -4058,7 +4058,7 @@ func triggerNotification(params NotificationParams) {
 
 		if direction == "send" {
 			title = "Transaction Sent"
-			body = fmt.Sprintf("Successfully sent %s %s on ", amount, symbol)
+			body = fmt.Sprintf("Successfully sent %s %s", amount, symbol)
 		} else {
 			title = "Transaction Received"
 			body = fmt.Sprintf("You received %s %s ", amount, symbol)
