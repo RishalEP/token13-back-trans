@@ -825,7 +825,7 @@ func chainInfoFromQuickNodeNetwork(network string) evmChainInfo {
 	switch {
 	case n == "8453" || n == "0x2105" || strings.Contains(n, "base"):
 		return evmChainInfo{Chain: "BASE", RedisKey: "base"}
-	case n == "137" || n == "0x89" || strings.Contains(n, "polygon") || strings.Contains(n, "matic"):
+	case n == "137" || n == "0x89" || strings.Contains(n, "polygon") || n == "pol":
 		return evmChainInfo{Chain: "POL", RedisKey: "pol"}
 	case n == "56" || n == "0x38" || strings.Contains(n, "bsc") || strings.Contains(n, "binance"):
 		return evmChainInfo{Chain: "BSC", RedisKey: "bsc"}
@@ -2301,7 +2301,7 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo, txTypeByHash map
 					dbTx.TokenSymbol = "ETH"
 				} else if chainInfo.Chain == "POL" {
 					dbTx.TokenName = "Polygon"
-					dbTx.TokenSymbol = "MATIC"
+					dbTx.TokenSymbol = "POL"
 				} else if chainInfo.Chain == "BSC" {
 					dbTx.TokenName = "Binance Smart Chain"
 					dbTx.TokenSymbol = "BNB"
@@ -2438,7 +2438,7 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 					dbTx.TokenSymbol = "ETH"
 				} else if chainInfo.Chain == "POL" {
 					dbTx.TokenName = "Polygon"
-					dbTx.TokenSymbol = "MATIC"
+					dbTx.TokenSymbol = "POL"
 				} else if chainInfo.Chain == "BSC" {
 					dbTx.TokenName = "Binance Smart Chain"
 					dbTx.TokenSymbol = "BNB"
@@ -2587,7 +2587,7 @@ func processMoralisInternalTx(internalTx MoralisInternalTx, txMap map[string]Mor
 					dbTx.TokenSymbol = "ETH"
 				} else if chainInfo.Chain == "POL" {
 					dbTx.TokenName = "Polygon"
-					dbTx.TokenSymbol = "MATIC"
+					dbTx.TokenSymbol = "POL"
 				} else if chainInfo.Chain == "BSC" {
 					dbTx.TokenName = "Binance Smart Chain"
 					dbTx.TokenSymbol = "BNB"
@@ -2929,6 +2929,7 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 	if blockTime == 0 {
 		blockTime = block.Time
 	}
+	txStatus := btcTransactionStatus(tx, blockNumber, blockTime)
 
 	netByAddress := map[string]*big.Int{}
 
@@ -3010,7 +3011,7 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 				ToAddress:       toAddr,
 				Amount:          amountStr,
 				NetworkFee:      networkFee,
-				Status:          "success",
+				Status:          txStatus,
 				TransactionType: txTypeNativeTransfer,
 				Direction:       direction,
 				CreatedAt:       time.Now(),
@@ -3019,25 +3020,45 @@ func processBtcTransaction(block BtcBlock, tx BtcTx) {
 			}
 
 			result := db.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
-				DoNothing: true,
+				Columns: []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
+				DoUpdates: clause.Assignments(map[string]interface{}{
+					"chain":            gorm.Expr("IF(status = 'success', chain, VALUES(chain))"),
+					"block_number":     gorm.Expr("IF(status = 'success', block_number, VALUES(block_number))"),
+					"block_time":       gorm.Expr("IF(status = 'success', block_time, VALUES(block_time))"),
+					"from_address":     gorm.Expr("IF(status = 'success', from_address, VALUES(from_address))"),
+					"to_address":       gorm.Expr("IF(status = 'success', to_address, VALUES(to_address))"),
+					"token_amount":     gorm.Expr("IF(status = 'success', token_amount, VALUES(token_amount))"),
+					"network_fee":      gorm.Expr("IF(status = 'success', network_fee, VALUES(network_fee))"),
+					"status":           gorm.Expr("IF(status = 'success', status, VALUES(status))"),
+					"transaction_type": gorm.Expr("IF(status = 'success', transaction_type, VALUES(transaction_type))"),
+					"direction":        gorm.Expr("IF(status = 'success', direction, VALUES(direction))"),
+					"network_fee_sats": gorm.Expr("IF(status = 'success', network_fee_sats, VALUES(network_fee_sats))"),
+					"standard":         gorm.Expr("IF(status = 'success', standard, VALUES(standard))"),
+					"contract_address": gorm.Expr("IF(status = 'success', contract_address, VALUES(contract_address))"),
+					"token_name":       gorm.Expr("IF(status = 'success', token_name, VALUES(token_name))"),
+					"token_symbol":     gorm.Expr("IF(status = 'success', token_symbol, VALUES(token_symbol))"),
+					"token_decimal":    gorm.Expr("IF(status = 'success', token_decimal, VALUES(token_decimal))"),
+				}),
 			}).Create(&dbTx)
 
 			logTxHistoryResult("BTC", "btc_transaction_histories", wa.Address, "BTC", dbTx.TxHash, dbTx.Direction, dbTx.Amount, result.RowsAffected, result.Error)
 			if result.Error == nil {
-				triggerNotification(NotificationParams{
-					Address:   wa.Address,
-					Chain:     "BTC",
-					Amount:    dbTx.Amount,
-					Symbol:    "BTC",
-					Direction: dbTx.Direction,
-					TxHash:    dbTx.TxHash,
-					TxType:    dbTx.TransactionType,
-					Source:    "btc_transaction_histories",
-					Rows:      result.RowsAffected,
-				})
+				if dbTx.Status == "success" {
+					deleteReplacedBtcPendingTransactions(dbTx)
+					triggerNotification(NotificationParams{
+						Address:   wa.Address,
+						Chain:     "BTC",
+						Amount:    dbTx.Amount,
+						Symbol:    "BTC",
+						Direction: dbTx.Direction,
+						TxHash:    dbTx.TxHash,
+						TxType:    dbTx.TransactionType,
+						Source:    "btc_transaction_histories",
+						Rows:      result.RowsAffected,
+					})
+				}
 				updateRedis(wa.Address, "btc", dbTx)
-				if result.RowsAffected > 0 {
+				if dbTx.Status == "success" && result.RowsAffected > 0 {
 					delta := amountStr
 					if netAmount.Sign() < 0 {
 						delta = negateAmount(amountStr)
@@ -3086,7 +3107,7 @@ func nativeTokenAddress(chainID string) string {
 	case "sol", "solana", "solana-mainnet", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
 		return "SOL"
 	case "pol", "polygon", "137", "0x89", "polygon-mainnet":
-		return "MATIC"
+		return "POL"
 	case "base", "8453", "0x2105", "base-mainnet":
 		return "BASE ETH"
 	case "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain":
@@ -3673,6 +3694,49 @@ func firstVoutAddress(vouts []BtcVout) string {
 	}
 	return ""
 }
+
+func btcTransactionStatus(tx BtcTx, blockNumber, blockTime int64) string {
+	if tx.Confirmations > 0 {
+		return "success"
+	}
+	if blockNumber > 0 || blockTime > 0 || strings.TrimSpace(tx.BlockHash) != "" {
+		return "success"
+	}
+	return "pending"
+}
+
+func deleteReplacedBtcPendingTransactions(confirmedTx BtcTransactionHistory) {
+	if db == nil {
+		return
+	}
+
+	address := normalizeAddress("btc", strings.TrimSpace(confirmedTx.WalletAddress))
+	chain := strings.ToUpper(strings.TrimSpace(confirmedTx.Chain))
+	txHash := strings.TrimSpace(confirmedTx.TxHash)
+	direction := strings.TrimSpace(confirmedTx.Direction)
+	amount := strings.TrimSpace(confirmedTx.Amount)
+	fromAddr := normalizeAddress("btc", strings.TrimSpace(confirmedTx.FromAddress))
+	toAddr := normalizeAddress("btc", strings.TrimSpace(confirmedTx.ToAddress))
+
+	if address == "" || chain == "" || txHash == "" || direction == "" || amount == "" {
+		return
+	}
+
+	recentPendingCutoff := time.Now().Add(-72 * time.Hour)
+	result := db.Where(
+		"LOWER(address) = LOWER(?) AND LOWER(chain) = LOWER(?) AND LOWER(status) = 'pending' AND LOWER(tx_hash) <> LOWER(?) AND direction = ? AND token_amount = ? AND LOWER(COALESCE(from_address, '')) = LOWER(?) AND LOWER(COALESCE(to_address, '')) = LOWER(?) AND created_at >= ?",
+		address, chain, txHash, direction, amount, fromAddr, toAddr, recentPendingCutoff,
+	).Delete(&BtcTransactionHistory{})
+
+	if result.Error != nil {
+		log.Printf("[BTC] pending replace-delete failed address=%s tx=%s err=%v", address, txHash, result.Error)
+		return
+	}
+	if result.RowsAffected > 0 {
+		log.Printf("[BTC] deleted_replaced_pending address=%s tx=%s rows=%d", address, txHash, result.RowsAffected)
+	}
+}
+
 func sha256d(data []byte) []byte {
 	first := sha256.Sum256(data)
 	second := sha256.Sum256(first[:])
@@ -3826,7 +3890,7 @@ func fetchNativeTokenPriceUSD(chainInfo evmChainInfo) (float64, error) {
 		}
 		return fetchCoinGeckoPriceUSD("ethereum")
 	case "POL":
-		return fetchCoinGeckoPriceUSD("matic-network")
+		return fetchCoinGeckoPriceUSD("polygon-ecosystem-token")
 	case "BSC":
 		return fetchCoinGeckoPriceUSD("binancecoin")
 	default:
