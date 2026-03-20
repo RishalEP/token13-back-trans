@@ -41,7 +41,8 @@ var (
 	walletResolveCacheTTL        = 30 * time.Second
 	walletResolveCacheMaxEntries = 20000
 
-	enableBalanceAuditLogs = true
+	enableBalanceAuditLogs   = true
+	errInvalidWebhookPayload = errors.New("invalid webhook payload")
 )
 
 type walletResolveCacheEntry struct {
@@ -500,6 +501,7 @@ const (
 	WatchedWalletKey          = "watched_wallets"
 	BtcWatchedWalletKey       = "btc-addresses-list"
 	userBalanceRedisKeyPrefix = "user_balances"
+	chainEventsStreamName     = "chain_events"
 )
 
 //Load Addresses From DB into Redis
@@ -690,41 +692,83 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
 	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
 
-	payloadCopy := append([]byte(nil), bodyBytes...)
+	if err := processWebhookPayloads(reqID, bodyBytes); err != nil {
+		statusCode := http.StatusInternalServerError
+		statusText := "Internal Server Error"
+		if errors.Is(err, errInvalidWebhookPayload) {
+			statusCode = http.StatusBadRequest
+			statusText = "Bad Request"
+		}
+		log.Printf("[REQUEST %s] Failure: webhook producer error: %v", reqID, err)
+		http.Error(w, statusText, statusCode)
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write([]byte("Accepted")); err != nil {
 		log.Printf("[REQUEST %s] Failure: write response error: %v", reqID, err)
 		return
 	}
-	log.Printf("[REQUEST %s] Accepted for background processing. AckDuration=%s", reqID, time.Since(start))
-
-	go processWebhookPayloadsAsync(reqID, payloadCopy, start)
-}
-
-func processWebhookPayloadsAsync(reqID string, bodyBytes []byte, requestStart time.Time) {
-	bgStart := time.Now()
-	defer func() {
-		if rec := recover(); rec != nil {
-			log.Printf("[REQUEST %s] Background failure: panic: %v", reqID, rec)
-			log.Printf("[REQUEST %s] Background panic stack: %s", reqID, debug.Stack())
-		}
-	}()
-
-	if err := processWebhookPayloads(reqID, bodyBytes); err != nil {
-		log.Printf("[REQUEST %s] Background failure. ProcessDuration=%s TotalSinceRequest=%s Error=%v", reqID, time.Since(bgStart), time.Since(requestStart), err)
-		return
-	}
-	log.Printf("[REQUEST %s] Background success. ProcessDuration=%s TotalSinceRequest=%s", reqID, time.Since(bgStart), time.Since(requestStart))
+	log.Printf("[REQUEST %s] Accepted. AckDuration=%s", reqID, time.Since(start))
 }
 
 func processWebhookPayloads(reqID string, bodyBytes []byte) error {
+	events, err := extractWebhookChainEvents(reqID, bodyBytes)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		log.Printf("[REQUEST %s] No chain events extracted from payload", reqID)
+		return nil
+	}
+
+	if rdb == nil {
+		return fmt.Errorf("redis client is not initialized")
+	}
+
+	for _, event := range events {
+		if err := enqueueChainEvent(reqID, event); err != nil {
+			return err
+		}
+	}
+
+	log.Printf("[REQUEST %s] Enqueued %d chain events to stream=%s", reqID, len(events), chainEventsStreamName)
+	return nil
+}
+
+type chainEventMessage struct {
+	WalletAddress string
+	ChainID       string
+	TxHash        string
+}
+
+func enqueueChainEvent(reqID string, event chainEventMessage) error {
+	xAddCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	msgID, err := rdb.XAdd(xAddCtx, &redis.XAddArgs{
+		Stream: chainEventsStreamName,
+		Values: map[string]interface{}{
+			"wallet_address": event.WalletAddress,
+			"chain_id":       event.ChainID,
+			"tx_hash":        event.TxHash,
+		},
+	}).Result()
+	if err != nil {
+		return fmt.Errorf("redis xadd failed stream=%s wallet=%s chain_id=%s tx_hash=%s: %w", chainEventsStreamName, event.WalletAddress, event.ChainID, event.TxHash, err)
+	}
+
+	log.Printf("[REQUEST %s] Enqueued chain event stream=%s id=%s wallet=%s chain_id=%s tx_hash=%s", reqID, chainEventsStreamName, msgID, event.WalletAddress, event.ChainID, event.TxHash)
+	return nil
+}
+
+func extractWebhookChainEvents(reqID string, bodyBytes []byte) ([]chainEventMessage, error) {
 	var payloads [][]byte
 	bodyTrimmed := strings.TrimSpace(string(bodyBytes))
 	if strings.HasPrefix(bodyTrimmed, "[") {
 		var rawMessages []json.RawMessage
 		if err := json.Unmarshal(bodyBytes, &rawMessages); err != nil {
-			log.Printf("[REQUEST %s] Failure: JSON decode error (array): %v", reqID, err)
-			return fmt.Errorf("invalid json array: %w", err)
+			return nil, fmt.Errorf("%w: invalid json array: %v", errInvalidWebhookPayload, err)
 		}
 		for _, msg := range rawMessages {
 			payloads = append(payloads, []byte(msg))
@@ -733,53 +777,155 @@ func processWebhookPayloads(reqID string, bodyBytes []byte) error {
 		payloads = append(payloads, bodyBytes)
 	}
 
+	events := make([]chainEventMessage, 0)
+	seen := make(map[string]struct{})
+	trackedAddressCache := make(map[string]bool)
+	addEvent := func(chainID, txHash string, walletAddresses ...string) error {
+		chainID = strings.TrimSpace(chainID)
+		txHash = normalizeChainEventTxHash(chainID, txHash)
+		if chainID == "" || txHash == "" {
+			return nil
+		}
+		for _, walletAddress := range walletAddresses {
+			normalizedWallet := normalizeChainEventWalletAddress(chainID, walletAddress)
+			if normalizedWallet == "" {
+				continue
+			}
+			trackedKey := strings.ToLower(strings.TrimSpace(chainID)) + "|" + strings.ToLower(strings.TrimSpace(normalizedWallet))
+			isTracked, cached := trackedAddressCache[trackedKey]
+			if !cached {
+				var lookupErr error
+				isTracked, lookupErr = isTrackedWalletAddress(chainID, normalizedWallet)
+				if lookupErr != nil {
+					return lookupErr
+				}
+				trackedAddressCache[trackedKey] = isTracked
+			}
+			if !isTracked {
+				continue
+			}
+			uniqueKey := chainID + "|" + txHash + "|" + normalizedWallet
+			if _, exists := seen[uniqueKey]; exists {
+				continue
+			}
+			seen[uniqueKey] = struct{}{}
+			events = append(events, chainEventMessage{
+				WalletAddress: normalizedWallet,
+				ChainID:       chainID,
+				TxHash:        txHash,
+			})
+		}
+		return nil
+	}
+
 	for i, currentPayload := range payloads {
-		itemStart := time.Now()
 		var envelope map[string]json.RawMessage
 		if err := json.Unmarshal(currentPayload, &envelope); err != nil {
-			log.Printf("[REQUEST %s] Failure: JSON decode error (item %d): %v", reqID, i, err)
-			return fmt.Errorf("invalid json item %d: %w", i, err)
+			return nil, fmt.Errorf("%w: invalid json item %d: %v", errInvalidWebhookPayload, i, err)
 		}
 
 		switch {
 		case envelope["metadata"] != nil && envelope["transfers"] != nil:
 			var payload QuickNodePayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
-				log.Printf("[REQUEST %s] Failure: QuickNode decode error (item %d): %v", reqID, i, err)
-				return fmt.Errorf("invalid quicknode item %d: %w", i, err)
+				return nil, fmt.Errorf("%w: invalid quicknode item %d: %v", errInvalidWebhookPayload, i, err)
 			}
-			chainInfo := chainInfoFromQuickNodeNetwork(payload.Metadata.Network)
-			log.Printf("[REQUEST %s] Starting processing (item %d): type=quicknode chain=%s network=%s transfers=%d", reqID, i, chainInfo.Chain, payload.Metadata.Network, len(payload.Transfers))
-			handleQuickNodePayload(payload)
-			log.Printf("[REQUEST %s] Finished processing QuickNode payload (item %d) Duration=%s", reqID, i, time.Since(itemStart))
+			chainID := producerChainIDFromQuickNodeNetwork(payload.Metadata.Network)
+			log.Printf("[REQUEST %s] Extracting (item %d): type=quicknode chain_id=%s network=%s transfers=%d", reqID, i, chainID, payload.Metadata.Network, len(payload.Transfers))
+			for _, tx := range payload.Transfers {
+				if err := addEvent(chainID, tx.TxHash, tx.From, tx.To, tx.TxFrom, tx.TxTo); err != nil {
+					return nil, err
+				}
+			}
 		case envelope["confirmed"] != nil && envelope["chainId"] != nil:
 			var payload MoralisEvmPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
-				log.Printf("[REQUEST %s] Failure: Moralis decode error (item %d): %v", reqID, i, err)
-				return fmt.Errorf("invalid moralis item %d: %w", i, err)
+				return nil, fmt.Errorf("%w: invalid moralis item %d: %v", errInvalidWebhookPayload, i, err)
 			}
-			chainInfo := chainInfoFromMoralisChainId(payload.ChainId)
-			log.Printf("[REQUEST %s] Starting processing (item %d): type=moralis chain=%s chainId=%s native=%d erc20=%d", reqID, i, chainInfo.Chain, payload.ChainId, len(payload.Txs), len(payload.Erc20Transfers))
-			handleMoralisPayload(payload)
-			log.Printf("[REQUEST %s] Finished processing Moralis payload (item %d) Duration=%s", reqID, i, time.Since(itemStart))
+			chainID := producerChainIDFromMoralisChainID(payload.ChainId)
+			log.Printf("[REQUEST %s] Extracting (item %d): type=moralis chain_id=%s chainId=%s native=%d internal=%d erc20=%d approvals=%d", reqID, i, chainID, payload.ChainId, len(payload.Txs), len(payload.TxsInternal), len(payload.Erc20Transfers), len(payload.Erc20Approvals))
+			for _, tx := range payload.Txs {
+				if err := addEvent(chainID, tx.Hash, tx.FromAddress, tx.ToAddress); err != nil {
+					return nil, err
+				}
+			}
+			for _, internalTx := range payload.TxsInternal {
+				if err := addEvent(chainID, internalTx.TransactionHash, internalTx.From, internalTx.To); err != nil {
+					return nil, err
+				}
+			}
+			for _, transfer := range payload.Erc20Transfers {
+				if err := addEvent(chainID, transfer.TransactionHash, transfer.From, transfer.To); err != nil {
+					return nil, err
+				}
+			}
+			for _, approval := range payload.Erc20Approvals {
+				if err := addEvent(chainID, approval.TransactionHash, approval.Owner, approval.Spender); err != nil {
+					return nil, err
+				}
+			}
 		case envelope["transactions"] != nil:
 			var payload QuickNodeBtcPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
-				log.Printf("[REQUEST %s] Failure: BTC decode error (item %d): %v", reqID, i, err)
-				return fmt.Errorf("invalid btc item %d: %w", i, err)
+				return nil, fmt.Errorf("%w: invalid btc item %d: %v", errInvalidWebhookPayload, i, err)
 			}
-			log.Printf("[REQUEST %s] Starting processing (item %d): type=btc count=%d", reqID, i, len(payload.Transactions))
-			handleBtcPayload(payload)
-			log.Printf("[REQUEST %s] Finished processing BTC payload (item %d) Duration=%s", reqID, i, time.Since(itemStart))
+			const btcChainID = "btc"
+			log.Printf("[REQUEST %s] Extracting (item %d): type=btc count=%d", reqID, i, len(payload.Transactions))
+			for _, tx := range payload.Transactions {
+				for _, vin := range tx.Vin {
+					if err := addEvent(btcChainID, tx.Txid, vin.Addresses...); err != nil {
+						return nil, err
+					}
+				}
+				for _, vout := range tx.Vout {
+					if err := addEvent(btcChainID, tx.Txid, vout.Addresses...); err != nil {
+						return nil, err
+					}
+				}
+			}
 		case envelope["matches"] != nil:
 			var payload QuickNodeSolanaPayload
 			if err := json.Unmarshal(currentPayload, &payload); err != nil {
-				log.Printf("[REQUEST %s] Failure: Solana decode error (item %d): %v", reqID, i, err)
-				return fmt.Errorf("invalid solana item %d: %w", i, err)
+				return nil, fmt.Errorf("%w: invalid solana item %d: %v", errInvalidWebhookPayload, i, err)
 			}
-			log.Printf("[REQUEST %s] Starting processing (item %d): type=solana slot=%d matches=%d", reqID, i, payload.Slot, len(payload.Matches))
-			handleSolanaPayload(payload)
-			log.Printf("[REQUEST %s] Finished processing Solana payload (item %d) Duration=%s", reqID, i, time.Since(itemStart))
+			const solanaChainID = "solana"
+			log.Printf("[REQUEST %s] Extracting (item %d): type=solana slot=%d matches=%d", reqID, i, payload.Slot, len(payload.Matches))
+			for _, match := range payload.Matches {
+				signature := ""
+				if len(match.Transaction.Signatures) > 0 {
+					signature = strings.TrimSpace(match.Transaction.Signatures[0])
+				}
+				if signature == "" {
+					continue
+				}
+
+				for _, accountKey := range match.Transaction.Message.AccountKeys {
+					if err := addEvent(solanaChainID, signature, accountKey.Pubkey); err != nil {
+						return nil, err
+					}
+				}
+
+				for _, instruction := range match.Transaction.Message.Instructions {
+					parsed, ok := parseSolParsed(instruction.Parsed)
+					if !ok {
+						continue
+					}
+					if err := addEvent(solanaChainID, signature, parsed.Info.Source, parsed.Info.Destination, parsed.Info.Authority, parsed.Info.Delegate); err != nil {
+						return nil, err
+					}
+				}
+
+				for _, preBalance := range match.Meta.PreTokenBalances {
+					if err := addEvent(solanaChainID, signature, preBalance.Owner); err != nil {
+						return nil, err
+					}
+				}
+				for _, postBalance := range match.Meta.PostTokenBalances {
+					if err := addEvent(solanaChainID, signature, postBalance.Owner); err != nil {
+						return nil, err
+					}
+				}
+			}
 		default:
 			if envelope["message"] != nil {
 				msg, _ := envelope["message"]
@@ -789,12 +935,133 @@ func processWebhookPayloads(reqID string, bodyBytes []byte) error {
 					continue
 				}
 			}
-			log.Printf("[REQUEST %s] Failure: unsupported payload shape (item %d)", reqID, i)
-			return fmt.Errorf("unsupported payload item %d", i)
+			return nil, fmt.Errorf("%w: unsupported payload item %d", errInvalidWebhookPayload, i)
 		}
 	}
 
-	return nil
+	return events, nil
+}
+
+func producerChainIDFromMoralisChainID(chainID string) string {
+	switch strings.ToLower(strings.TrimSpace(chainID)) {
+	case "0x1", "1", "eth", "ethereum", "ethereum-mainnet":
+		return "1"
+	case "0x89", "137", "pol", "polygon", "polygon-mainnet":
+		return "137"
+	case "0x2105", "8453", "base", "base-mainnet":
+		return "8453"
+	case "0x38", "56", "bsc", "bsc-mainnet", "binance-smart-chain":
+		return "56"
+	default:
+		return parseNumericChainIDOrFallback(chainID)
+	}
+}
+
+func producerChainIDFromQuickNodeNetwork(network string) string {
+	n := strings.ToLower(strings.TrimSpace(network))
+	switch {
+	case n == "65" || n == "tron" || n == "tron-mainnet" || n == "trx" || strings.Contains(n, "tron"):
+		return "65"
+	case n == "8453" || n == "0x2105" || n == "base" || n == "base-mainnet" || strings.Contains(n, "base"):
+		return "8453"
+	case n == "137" || n == "0x89" || n == "pol" || n == "polygon-mainnet" || strings.Contains(n, "polygon"):
+		return "137"
+	case n == "56" || n == "0x38" || n == "bsc" || n == "bsc-mainnet" || strings.Contains(n, "bsc") || strings.Contains(n, "binance"):
+		return "56"
+	case n == "1" || n == "0x1" || n == "eth" || n == "ethereum-mainnet" || strings.Contains(n, "ethereum") || strings.Contains(n, "eth"):
+		return "1"
+	default:
+		return parseNumericChainIDOrFallback(network)
+	}
+}
+
+func parseNumericChainIDOrFallback(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "0x") || strings.HasPrefix(trimmed, "0X") {
+		parsed, err := strconv.ParseUint(trimmed[2:], 16, 64)
+		if err == nil {
+			return strconv.FormatUint(parsed, 10)
+		}
+		return strings.ToLower(trimmed)
+	}
+	if parsed, err := strconv.ParseUint(trimmed, 10, 64); err == nil {
+		return strconv.FormatUint(parsed, 10)
+	}
+	return strings.ToLower(trimmed)
+}
+
+func normalizeChainEventWalletAddress(chainID, walletAddress string) string {
+	return strings.TrimSpace(normalizeAddress(chainID, walletAddress))
+}
+
+func normalizeChainEventTxHash(chainID, txHash string) string {
+	h := strings.TrimSpace(txHash)
+	if h == "" {
+		return ""
+	}
+	normalizedChain := strings.ToLower(strings.TrimSpace(chainID))
+	if normalizedChain == "65" || isEvmChain(normalizedChain) {
+		return strings.ToLower(h)
+	}
+	return h
+}
+
+func isTrackedWalletAddress(chainID, walletAddress string) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("database client is not initialized")
+	}
+
+	normalizedAddr := normalizeAddress(chainID, walletAddress)
+	if normalizedAddr == "" {
+		return false, nil
+	}
+
+	chainCandidates := uniqueNonEmptyStrings(getChainSynonyms(chainID))
+	if len(chainCandidates) == 0 {
+		chainCandidates = []string{strings.TrimSpace(chainID)}
+	}
+
+	addrCandidates := []string{normalizedAddr}
+	c := strings.ToLower(strings.TrimSpace(chainID))
+	if c == "tron" || c == "tron-mainnet" || c == "trx" || c == "65" {
+		if base58Addr, err := HexToTronAddress(normalizedAddr); err == nil && base58Addr != "" && !contains(addrCandidates, base58Addr) {
+			addrCandidates = append(addrCandidates, base58Addr)
+		}
+	}
+	addrCandidates = uniqueNonEmptyStrings(addrCandidates)
+
+	var row WalletAddress
+	if err := db.Select("id").Where("chain_id IN ? AND address IN ?", chainCandidates, addrCandidates).Limit(1).Take(&row).Error; err == nil {
+		return true, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+
+	if err := db.Select("id").Where("chain_id IN ? AND address_hex IN ?", chainCandidates, addrCandidates).Limit(1).Take(&row).Error; err == nil {
+		return true, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+
+	lowerChains := lowerCopy(chainCandidates)
+	lowerAddrs := lowerCopy(addrCandidates)
+
+	if err := db.Select("id").Where("LOWER(chain_id) IN ? AND LOWER(address) IN ?", lowerChains, lowerAddrs).Limit(1).Take(&row).Error; err == nil {
+		return true, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+
+	if err := db.Select("id").Where("LOWER(chain_id) IN ? AND LOWER(address_hex) IN ?", lowerChains, lowerAddrs).Limit(1).Take(&row).Error; err == nil {
+		return true, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+
+	return false, nil
 }
 
 // ---------------------------------------------------------
@@ -1564,6 +1831,20 @@ func classifyMoralisApprovalTxType(approval MoralisErc20Approval, txTypeByHash m
 	return txTypeApproval
 }
 
+func inferTransferDirection(chainID, walletAddress, fromAddress, toAddress string) string {
+	wallet := normalizeAddressForFlow(chainID, walletAddress)
+	from := normalizeAddressForFlow(chainID, fromAddress)
+	to := normalizeAddressForFlow(chainID, toAddress)
+
+	if wallet != "" && from != "" && strings.EqualFold(wallet, from) {
+		return "send"
+	}
+	if wallet != "" && to != "" && strings.EqualFold(wallet, to) {
+		return "receive"
+	}
+	return "receive"
+}
+
 func normalizeAddressForFlow(chainID, address string) string {
 	addr := strings.TrimSpace(address)
 	if addr == "" {
@@ -2118,21 +2399,19 @@ func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 	if mappedType, ok := txTypeByHash[strings.ToLower(strings.TrimSpace(tx.TxHash))]; ok && mappedType != "" {
 		classifiedTxType = mappedType
 	}
+	var waList []WalletAddress
 	for _, walletHex := range wallets {
 		if walletHex == "" {
 			continue
 		}
 
-		waList, _ := resolveWalletAddresses("tron", walletHex)
+		waList, _ = resolveWalletAddresses("tron", walletHex)
 		if len(waList) == 0 {
 			continue
 		}
 
 		for _, wa := range waList {
-			direction := "receive"
-			if strings.EqualFold(walletHex, tx.From) {
-				direction = "send"
-			}
+			direction := inferTransferDirection("tron", wa.Address, tx.From, tx.To)
 
 			if classifiedTxType == txTypeSmartContractInteraction {
 				direction = "contract"
@@ -2191,6 +2470,11 @@ func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 				updateRedis(walletAddress, "tron", dbTx)
 				if result.RowsAffected > 0 {
 					insertedAny = true
+					// Only deduct gas fees if the wallet we are processing is the one who PAID the gas
+					// Usually the 'tx_from' (transaction initiator)
+					if tx.CostInTrx != "" && tx.CostInTrx != "0" && strings.EqualFold(tx.TxFrom, wa.Address) {
+						updateUserBalanceForAddress("tron", wa.Address, nativeTokenAddress("tron"), negateAmount(tx.CostInTrx))
+					}
 				}
 			}
 		}
@@ -2204,11 +2488,6 @@ func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 			tokenAddress = normalizeTokenAddress("tron", tokenAddress)
 		}
 		updateUserBalancesForTransfer("tron", tx.From, tx.To, tokenAddress, amountStr)
-
-		// Deduct gas fees for Tron (TRX)
-		if tx.CostInTrx != "" && tx.CostInTrx != "0" {
-			updateUserBalanceForAddress("tron", tx.From, nativeTokenAddress("tron"), negateAmount(tx.CostInTrx))
-		}
 	}
 }
 
