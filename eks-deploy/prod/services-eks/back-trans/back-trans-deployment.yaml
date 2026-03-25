@@ -30,17 +30,16 @@ spec:
           ports:
             - containerPort: 8800
               name: http-8800
+          envFrom:
+            - secretRef:
+                name: back-trans-prod-secrets
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: back-trans-prod-secrets
-                  key: DATABASE_URL
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: back-trans-prod-secrets
-                  key: REDIS_URL
+            - name: FCM_CREDENTIALS_FILE
+              value: /etc/secrets/firebase.json
+          volumeMounts:
+            - name: firebase-secret
+              mountPath: /etc/secrets
+              readOnly: true
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
@@ -52,4 +51,10 @@ spec:
             limits:
               cpu: 100m
               memory: 256Mi
-  
+      volumes:
+        - name: firebase-secret
+          secret:
+            secretName: back-trans-prod-secrets
+            items:
+              - key: FCM_CREDENTIALS_FILE
+                path: firebase.json

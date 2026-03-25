@@ -27,13 +27,13 @@ jobs:
       JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
       JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_PROD }}
-      REDIS_URL: ${{ secrets.REDIS_URL_PROD }}
+      APNS_P8_KEY: ${{ secrets.APNS_P8_KEY_PROD }}
+      FCM_CREDENTIALS_JSON: ${{ secrets.FCM_CREDENTIALS_JSON_PROD }}
 
       #Notification metadata
       ENVIRONMENT: Production
       IOS_VERSION: "1.4v"
-      ANDROID_VERSION: "NA"
+      ANDROID_VERSION: "1.4v"
       BACKEND_SERVICE: back-trans
 
     steps:
@@ -77,18 +77,25 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_JUMP_PRIVATE_KEY }}
 
+      - name: Parse back trans Secrets (prod)
+        run: |
+          echo '${{ secrets.EKS_PROD_BACK_TRANS_SECRETS }}' > back-trans.json
+          jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' back-trans.json > back-trans.env
+          shred -u back-trans.json
+
       - name: Copy back-trans manifests to Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST 'mkdir -p ~/deploy/back-trans/prod/back-trans'
           rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/prod/services-eks/back-trans/ \
                 $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/prod/back-trans
-
+          scp -o StrictHostKeyChecking=no back-trans.env \
+                $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/prod/back-trans
 
       - name: Deploy back-trans to EKS via Bastion
         run: |
           ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
             "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' \
+            APNS_P8_KEY='${APNS_P8_KEY}' FCM_CREDENTIALS_JSON='${FCM_CREDENTIALS_JSON}' \
             bash -s" << 'EOSSH'
 
             set -euo pipefail
@@ -97,11 +104,22 @@ jobs:
 
             KCTX="--context=explorer-prod"
 
+            echo "$APNS_P8_KEY" | sed 's/\\n/\n/g' | tr -d '\r' > apns.p8
+            echo "$FCM_CREDENTIALS_JSON" > firebase.json
+
             echo "=== Creating and updating back-trans secrets at runtime ==="
+            LITERALS=""
+            while IFS= read -r line; do
+              LITERALS="$LITERALS --from-literal=$line"
+            done < back-trans.env
+
             kubectl $KCTX -n prod create secret generic back-trans-prod-secrets \
-              --from-literal=DATABASE_URL="${DATABASE_URL}" \
-              --from-literal=REDIS_URL="${REDIS_URL}" \
+              $LITERALS \
+              --from-file=APNS_P8_KEY=apns.p8 \
+              --from-file=FCM_CREDENTIALS_FILE=firebase.json \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
+
+            rm -f apns.p8 firebase.json
 
             echo "--- Apply Deployment, Service ---"
             kubectl $KCTX -n prod apply -f back-trans-deployment.yaml
@@ -120,6 +138,7 @@ jobs:
 
             kubectl $KCTX -n prod get pods,svc,deploy -l app=back-trans-prod -o wide
           EOSSH
+
       # ===============================
       # LARK NOTIFICATION (ALWAYS)
       # ===============================
