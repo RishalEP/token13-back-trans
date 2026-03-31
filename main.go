@@ -206,7 +206,7 @@ type UserBalance struct {
 // WalletAddress maps to the `wallet_addresses` table for wallet_id lookup.
 type WalletAddress struct {
 	ID             int64     `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
-	WalletID       string    `gorm:"column:wallet_id;type:char(64);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index,priority:1;uniqueIndex:uq_wallet_chain_address,priority:1" json:"wallet_id"`
+	WalletID       string    `gorm:"column:wallet_id;type:varchar(255);not null;index:idx_addr_wallet_chain;uniqueIndex:uq_wallet_chain_index,priority:1;uniqueIndex:uq_wallet_chain_address,priority:1" json:"wallet_id"`
 	Wallet         Wallet    `gorm:"constraint:OnDelete:CASCADE" json:"-"`
 	ChainID        string    `gorm:"column:chain_id;size:64;not null;index:idx_addr_wallet_chain;index:idx_chain_address,priority:1;uniqueIndex:uq_wallet_chain_index,priority:2;uniqueIndex:uq_wallet_chain_address,priority:2" json:"chain_id"`
 	IndexN         int       `gorm:"column:index_n;not null;uniqueIndex:uq_wallet_chain_index,priority:3" json:"index_n"`
@@ -561,8 +561,8 @@ func initDatabase() {
 	DbUrl := os.Getenv("DATABASE_URL")
 	if DbUrl == "" {
 		// Replace with your actual local string if needed
-		DbUrl = "token13:token132026@tcp(43.204.164.104:3306)/token13_app?charset=utf8mb4&parseTime=True"
-		//DbUrl = "root:@tcp(127.0.0.1:3306)/token13_feb?parseTime=True"
+		//DbUrl = "token13:token132026@tcp(43.204.164.104:3306)/token13_app?charset=utf8mb4&parseTime=True"
+		DbUrl = "root:Password@tcp(127.0.0.1:3306)/token13_app?parseTime=True"
 		log.Printf("DATABASE_URL not set, using default: %s", DbUrl)
 	}
 
