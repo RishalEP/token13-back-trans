@@ -220,7 +220,7 @@ type WalletAddress struct {
 }
 
 type Wallet struct {
-	WalletID           string          `gorm:"column:wallet_id;type:char(64);primaryKey" json:"wallet_id"`
+	WalletID           string          `gorm:"column:wallet_id;type:varchar(255);primaryKey" json:"wallet_id"`
 	Label              string          `gorm:"column:label;size:255;not null" json:"label"`
 	CreatedAt          time.Time       `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 	UpdatedAt          time.Time       `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
