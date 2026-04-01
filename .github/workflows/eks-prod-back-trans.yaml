@@ -33,7 +33,7 @@ jobs:
       #Notification metadata
       ENVIRONMENT: Production
       IOS_VERSION: "1.4v"
-      ANDROID_VERSION: "NA"
+      ANDROID_VERSION: "1.4v"
       BACKEND_SERVICE: back-trans
 
     steps:

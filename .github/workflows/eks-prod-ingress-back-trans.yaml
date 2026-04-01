@@ -2,10 +2,10 @@ name: Back-trans Prod Ingress CI/CD to EKS Production
 
 on:
   # push:
-    # branches:
-    #   - main
-    # paths:
-    #   - 'eks-deploy/prod/tools/ingress/**'
+  #   branches:
+  #     - main
+  #   paths:
+  #     - 'eks-deploy/prod/tools/ingress/**'
   workflow_dispatch:
 
 jobs:
