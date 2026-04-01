@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: back-trans-prod-ingress
+  namespace: prod
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/group.name: shared-alb-prod
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:568838100446:certificate/e5dac3a4-467b-486f-bcd1-616120f9e31b
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600
+    alb.ingress.kubernetes.io/target-group-name: tg-back-trans-prod
+    alb.ingress.kubernetes.io/healthcheck-path: /quicknode-webhook/health
+
+spec:
+  rules:
+  - host: first.digiedgete.click
+    http:
+      paths:
+      - path: /quicknode-webhook
+        pathType: Prefix
+        backend:
+          service:
+            name: back-trans-prod
+            port:
+              name: http-8800

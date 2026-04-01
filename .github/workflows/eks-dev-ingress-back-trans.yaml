@@ -1,0 +1,124 @@
+name: Back-trans Dev Ingress CI/CD to EKS Development
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'eks-deploy/dev/tools/ingress/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Ingress to EKS via Bastion
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+      JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
+      JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
+
+      # Notification metadata
+      ENVIRONMENT: Development
+      BACKEND_SERVICE: back-trans-dev-ingress
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Start SSH agent for Bastion
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_JUMP_PRIVATE_KEY }}
+
+      - name: Copy Ingress manifests to Bastion
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no ${JUMP_USER}@${JUMP_HOST} 'mkdir -p ~/deploy/back-trans/dev/tools/ingress'
+          rsync -avz -e 'ssh -o StrictHostKeyChecking=no' \
+            ./eks-deploy/dev/tools/ingress/ \
+            ${JUMP_USER}@${JUMP_HOST}:~/deploy/back-trans/dev/tools/ingress/
+
+      - name: Deploy Ingress to Dev EKS
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no ${JUMP_USER}@${JUMP_HOST} \
+            "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} bash -s" << 'EOSSH'
+
+              set -euo pipefail
+              cd ~/deploy/back-trans/dev/tools/ingress
+
+              echo "=== Updating kubeconfig for Development Cluster ==="
+              aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+
+              echo "=== Waiting for AWS Load Balancer Controller Webhook ==="
+              for i in $(seq 1 30); do
+                endpoints=$(kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o jsonpath='{.subsets[*].addresses[*].ip}' || true)
+                if [ -n "$endpoints" ]; then
+                  echo "✅ Webhook endpoints ready: $endpoints"
+                  break
+                fi
+                echo "Waiting for webhook... ($i/30)"
+                sleep 10
+              done
+
+              echo "=== Applying Ingress YAML ==="
+              kubectl apply -f .
+
+          EOSSH
+      # ===============================
+      # LARK NOTIFICATION (ALWAYS)
+      # ===============================
+      - name: Notify Lark – Deployment Status
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          DEPLOY_TIME=$(TZ=Asia/Dubai date '+%d/%m/%Y & %I:%M %p')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          REPO_NAME=$(basename "${{ github.repository }}")
+
+          ICON="ℹ️"
+          TITLE="Deployment Update"
+          if [ "$STATUS" = "success" ]; then
+            ICON="✅"
+            TITLE="Deployment Successful"
+          elif [ "$STATUS" = "failure" ]; then
+            ICON="🚨"
+            TITLE="Deployment Failed"
+          fi
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST "${{ secrets.LARK_WEBHOOK_URL_DEV }}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"msg_type\": \"interactive\",
+            \"card\": {
+              \"header\": {
+                \"title\": {
+                  \"tag\": \"plain_text\",
+                  \"content\": \"$ICON $REPO_NAME – $TITLE\"
+                }
+              },
+              \"elements\": [
+                {
+                  \"tag\": \"div\",
+                  \"text\": {
+                    \"tag\": \"lark_md\",
+                    \"content\": \"📦 **Repository:** $REPO_NAME\n🔖 Commit: \`$SHORT_SHA\`\n⏰ Deployment Time: $DEPLOY_TIME\n🌍 Environment: ${{ env.ENVIRONMENT }}\n👤 Deployed By: ${{ github.actor }}\n\n🧩 Backend Services Impacted:\n• ⚙️ ${{ env.BACKEND_SERVICE }}\n\n📊 Status: $STATUS\n👉 [View Logs]($RUN_URL)\"
+                  }
+                }
+              ]
+            }
+          }"
