@@ -27,7 +27,7 @@ jobs:
       JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
       JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_PROD }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_PROD_V4 }}
       REDIS_URL: ${{ secrets.REDIS_URL_PROD }}
 
       #Notification metadata
