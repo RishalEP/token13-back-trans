@@ -5,7 +5,7 @@ metadata:
   namespace: prod
   annotations:
     kubernetes.io/ingress.class: alb
-    alb.ingress.kubernetes.io/group.name: shared-alb-prod
+    alb.ingress.kubernetes.io/group.name: shared-alb-prod-v4
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
@@ -17,7 +17,7 @@ metadata:
 
 spec:
   rules:
-  - host: first.digiedgete.click
+  - host: explorer.first.digiedgete.click
     http:
       paths:
       - path: /quicknode-webhook
