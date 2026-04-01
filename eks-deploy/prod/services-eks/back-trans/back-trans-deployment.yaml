@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: back-trans-prod
+  name: back-trans
   namespace: prod
   labels:
-    app: back-trans-prod
+    app: back-trans
 spec:
   revisionHistoryLimit: 3
   replicas: 2
@@ -15,17 +15,17 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app: back-trans-prod
+      app: back-trans
   template:
     metadata:
       labels:
-        app: back-trans-prod
+        app: back-trans
       annotations:
         force-reload: "0"
     spec:
       containers:
-        - name: back-trans-prod
-          image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<ECR_REPOSITORY>:back-trans-prod-latest
+        - name: back-trans
+          image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<ECR_REPOSITORY>:back-trans-latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8800
@@ -34,12 +34,12 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: back-trans-prod-secrets
+                  name: back-trans-secrets
                   key: DATABASE_URL
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
-                  name: back-trans-prod-secrets
+                  name: back-trans-secrets
                   key: REDIS_URL
           securityContext:
             runAsUser: 1001
