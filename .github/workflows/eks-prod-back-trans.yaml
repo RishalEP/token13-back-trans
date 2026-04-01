@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_BASENAME: back-trans-prod
-  LATEST_TAG: back-trans-prod-latest
-  ROLLBACK_TAG: back-trans-prod-rollback
+  IMAGE_BASENAME: back-trans
+  LATEST_TAG: back-trans-latest
+  ROLLBACK_TAG: back-trans-rollback
 
 jobs:
   build-and-deploy:
@@ -98,7 +98,7 @@ jobs:
             KCTX="--context=explorer-prod"
 
             echo "=== Creating and updating back-trans secrets at runtime ==="
-            kubectl $KCTX -n prod create secret generic back-trans-prod-secrets \
+            kubectl $KCTX -n prod create secret generic back-trans-secrets \
               --from-literal=DATABASE_URL="${DATABASE_URL}" \
               --from-literal=REDIS_URL="${REDIS_URL}" \
               --dry-run=client -o yaml | kubectl $KCTX apply -f -
@@ -109,16 +109,16 @@ jobs:
             kubectl $KCTX -n prod apply -f back-trans-hpa.yaml
 
             echo "--- Force new rollout (permanent fix) ---"
-            kubectl $KCTX -n prod patch deployment back-trans-prod \
+            kubectl $KCTX -n prod patch deployment back-trans \
               -p "{\"spec\": {\"template\": {\"metadata\": {\"annotations\": {\"force-reload\": \"$(date +%s)\"}}}}}"
 
             echo "--- Update image and rollout ---"
-            kubectl $KCTX -n prod set image deployment/back-trans-prod \
-              back-trans-prod="$LATEST_IMAGE"
+            kubectl $KCTX -n prod set image deployment/back-trans \
+              back-trans="$LATEST_IMAGE"
 
-            kubectl $KCTX -n prod rollout status deployment/back-trans-prod --timeout=3m
+            kubectl $KCTX -n prod rollout status deployment/back-trans --timeout=3m
 
-            kubectl $KCTX -n prod get pods,svc,deploy -l app=back-trans-prod -o wide
+            kubectl $KCTX -n prod get pods,svc,deploy -l app=back-trans -o wide
           EOSSH
       # ===============================
       # LARK NOTIFICATION (ALWAYS)

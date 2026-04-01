@@ -1,11 +1,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: back-trans-prod
+  name: back-trans
   namespace: prod
 spec:
   selector:
-    app: back-trans-prod
+    app: back-trans
   ports:
     - name: http-8800
       port: 8800

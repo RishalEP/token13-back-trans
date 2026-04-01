@@ -24,6 +24,6 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: back-trans-prod
+            name: back-trans
             port:
               name: http-8800
