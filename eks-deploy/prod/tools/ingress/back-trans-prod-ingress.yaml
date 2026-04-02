@@ -27,3 +27,10 @@ spec:
             name: back-trans
             port:
               name: http-8800
+      - path: /webhook-listener
+        pathType: Prefix
+        backend:
+          service:
+            name: back-trans
+            port:
+              name: http-8800
