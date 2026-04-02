@@ -674,7 +674,6 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	forwardWebhookListenerRequest(reqID, w, r)
 	if r.Method != http.MethodPost {
 		log.Printf("[REQUEST %s] Failure: method not allowed (%s)", reqID, r.Method)
 		http.Error(w, "Only POST allowed", http.StatusMethodNotAllowed)
@@ -695,6 +694,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Empty body"))
 		return
 	}
+	forwardWebhookListenerRequest(reqID, r, bodyBytes)
 
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
 	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
@@ -719,19 +719,10 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[REQUEST %s] Accepted. AckDuration=%s", reqID, time.Since(start))
 }
 
-func forwardWebhookListenerRequest(reqID string, w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("[REQUEST %s] Forward failure: read body error: %v", reqID, err)
-		http.Error(w, "Read Error", http.StatusInternalServerError)
-		return
-	}
-	defer r.Body.Close()
-
+func forwardWebhookListenerRequest(reqID string, r *http.Request, bodyBytes []byte) {
 	targetURL, err := url.Parse(webhookForwardURL)
 	if err != nil {
 		log.Printf("[REQUEST %s] Forward failure: invalid target URL %q: %v", reqID, webhookForwardURL, err)
-		http.Error(w, "Forward target configuration error", http.StatusInternalServerError)
 		return
 	}
 	targetURL.RawQuery = r.URL.RawQuery
@@ -739,7 +730,6 @@ func forwardWebhookListenerRequest(reqID string, w http.ResponseWriter, r *http.
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), bytes.NewReader(bodyBytes))
 	if err != nil {
 		log.Printf("[REQUEST %s] Forward failure: build request error: %v", reqID, err)
-		http.Error(w, "Forward request build error", http.StatusInternalServerError)
 		return
 	}
 	copyHTTPHeaders(upstreamReq.Header, r.Header)
@@ -747,15 +737,11 @@ func forwardWebhookListenerRequest(reqID string, w http.ResponseWriter, r *http.
 	resp, err := webhookForwardHTTP.Do(upstreamReq)
 	if err != nil {
 		log.Printf("[REQUEST %s] Forward failure: upstream request error: %v", reqID, err)
-		http.Error(w, "Forward request failed", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
-
-	copyHTTPHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		log.Printf("[REQUEST %s] Forward warning: response copy error: %v", reqID, err)
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		log.Printf("[REQUEST %s] Forward warning: response body drain error: %v", reqID, err)
 	}
 	log.Printf("[REQUEST %s] Forwarded to %s with status=%d body_len=%d", reqID, targetURL.String(), resp.StatusCode, len(bodyBytes))
 }
