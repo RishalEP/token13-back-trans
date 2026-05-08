@@ -30,9 +30,8 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
-      JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
-      JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      BASTION_INSTANCE_ID: ${{ secrets.BASTION_INSTANCE_ID }}
 
     steps:
       - name: Checkout
