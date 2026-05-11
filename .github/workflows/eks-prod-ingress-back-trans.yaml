@@ -60,10 +60,10 @@ jobs:
           INGRESS_BLOCK
 
           # This 'stamps' the ingress so you can see the update time in 'describe'
-          kubectl annotate ingress back-trans-ingress -n prod deployment-date="$DEPLOY_DATE" --overwrite
+          kubectl annotate ingress back-trans-prod-ingress -n prod deployment-date="$DEPLOY_DATE" --overwrite
 
           echo "=== Verification ==="
-          kubectl describe ing back-trans-ingress -n prod | grep "deployment-date"
+          kubectl describe ing back-trans-prod-ingress -n prod | grep "deployment-date"
           EOF
 
           echo "PAYLOAD=$(gzip -c deploy_ingress.sh | base64 -w 0)" >> $GITHUB_ENV
