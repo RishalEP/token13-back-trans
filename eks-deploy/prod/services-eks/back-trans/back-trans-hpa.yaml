@@ -9,7 +9,7 @@ spec:
     kind: Deployment
     name: back-trans
   minReplicas: 2
-  maxReplicas: 4
+  maxReplicas: 15
   metrics:
     - type: Resource
       resource:
