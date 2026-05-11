@@ -102,15 +102,6 @@ jobs:
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> $GITHUB_OUTPUT
 
-      - name: Build & push back-trans image
-        id: build
-        run: |
-          REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
-          IMAGE="${REPO}:${LATEST_TAG}"
-          docker build -t "$IMAGE" -f ./Dockerfile .
-          docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> $GITHUB_OUTPUT
-
       - name: Generate Secure Deployment Payload
         id: prep_payload
         env:
