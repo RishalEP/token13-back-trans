@@ -519,9 +519,11 @@ func main() {
 	initDatabase()
 	initRedis()
 	InitNotificationService()
+	startRedEnvelopeForwarder()
 
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
 	http.HandleFunc("/webhook-listener", webhookHandler)
+	http.HandleFunc("/quicknode-webhook/red-envelope", redEnvelopeWebhookHandler)
 	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
