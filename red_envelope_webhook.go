@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	redEnvelopeStreamName             = "red_envelope_events"
-	redEnvelopeConsumerGroup          = "red_envelope_forwarders"
-	redEnvelopeForwardBatchSize int64 = 20
+	redEnvelopeStreamName                    = "red_envelope_events"
+	redEnvelopeConsumerGroup                 = "red_envelope_forwarders"
+	redEnvelopeForwardBatchSize        int64 = 20
+	RED_ENVELOPE_MIGRATION_WEBHOOK_URL       = "https://test.first.digiedgete.click/migration/internal/webhooks/red-envelope"
 )
 
 var redEnvelopeForwardHTTPClient = &http.Client{Timeout: 15 * time.Second}
@@ -188,7 +189,7 @@ func startRedEnvelopeForwarder() {
 		return
 	}
 
-	targetURL := strings.TrimSpace(os.Getenv("RED_ENVELOPE_MIGRATION_WEBHOOK_URL"))
+	targetURL := strings.TrimSpace(RED_ENVELOPE_MIGRATION_WEBHOOK_URL)
 	if targetURL == "" {
 		log.Printf("[RED_ENVELOPE FORWARDER] RED_ENVELOPE_MIGRATION_WEBHOOK_URL is empty; forwarder disabled")
 		return
