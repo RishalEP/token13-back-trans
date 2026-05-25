@@ -86,24 +86,24 @@ var (
 // TRON Schema
 type WalletTransactionHistory struct {
 	ID              int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	WalletAddress   string    `gorm:"column:address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_address;index:idx_address_chain,priority:1"`
-	TxHash          string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_wallet_tx_to;index:idx_tx_hash"`
+	WalletAddress   string    `gorm:"column:address;size:191;uniqueIndex:idx_wallet_tx_to_contract;index:idx_address;index:idx_address_chain,priority:1"`
+	TxHash          string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_wallet_tx_to_contract;index:idx_tx_hash"`
 	Chain           string    `gorm:"column:chain;size:20;primaryKey;index:idx_chain"`
 	BlockNumber     int64     `gorm:"column:block_number"`
 	BlockTime       int64     `gorm:"column:block_time;index:idx_block_time"`
 	FromAddress     string    `gorm:"column:from_address;size:191;index:idx_from_address"`
-	ToAddress       string    `gorm:"column:to_address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_to_address"`
+	ToAddress       string    `gorm:"column:to_address;size:191;uniqueIndex:idx_wallet_tx_to_contract;index:idx_to_address"`
 	Amount          string    `gorm:"column:token_amount"`
 	FiatValue       float64   `gorm:"column:fiat_value;type:decimal(20,8);default:0"`
 	BandwidthUsed   int64     `gorm:"column:bandwidth_used"`
 	EnergyUsed      int64     `gorm:"column:energy_used"`
-	CostInTrx       float64   `gorm:"column:cost_in_trx;type:decimal(20,8);default:0"`
-	CostInUsd       float64   `gorm:"column:cost_in_usd;type:decimal(20,8);default:0"`
+	CostInTrx       float64   `gorm:"column:cost_in_trx;type:decimal(20,8);default:0"` // Exact cost in TRX
+	CostInUsd       float64   `gorm:"column:cost_in_usd;type:decimal(20,8);default:0"` // Exact cost in USD
 	Direction       string    `gorm:"column:direction;size:10"`
 	Status          string    `json:"status" gorm:"type:varchar(20);default:'success'"`
 	TransactionType string    `json:"transaction_type" gorm:"type:varchar(50);default:'transfer'"`
 	Standard        string    `gorm:"column:standard;index:idx_standard"`
-	ContractAddress string    `gorm:"column:contract_address;index:idx_contract_address"`
+	ContractAddress string    `gorm:"column:contract_address;size:191;uniqueIndex:idx_wallet_tx_to_contract;index:idx_contract_address"`
 	TokenName       string    `gorm:"column:token_name"`
 	TokenSymbol     string    `gorm:"column:token_symbol"`
 	TokenDecimal    uint8     `gorm:"column:token_decimal"`
@@ -2453,7 +2453,7 @@ func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 			}
 
 			result := db.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}, {Name: "to_address"}},
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}, {Name: "to_address"}, {Name: "contract_address"}},
 				DoNothing: true,
 			}).Create(&dbTx)
 
