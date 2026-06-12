@@ -1,0 +1,51 @@
+name: Rollback main To commit SHA
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: "Commit SHA or tag to rollback main"
+        required: true
+        type: string
+        
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate ref exists
+        run: git rev-parse --verify "${{ inputs.target_ref }}"
+
+      - name: Validate ref is in main history
+        run: |
+          # Check if target is ancestor (rollback) OR descendant (restore/fast-forward)
+          if git merge-base --is-ancestor "${{ inputs.target_ref }}" origin/main; then
+            echo "✅ Target is an ancestor of main (rollback)"
+          elif git merge-base --is-ancestor origin/main "${{ inputs.target_ref }}"; then
+            echo "✅ Target is a descendant of main (restore/fast-forward)"
+          else
+            echo "❌ Target ref is not in the main branch lineage at all"
+            exit 1
+          fi
+
+      - name: Backup current state
+        run: |
+          git tag backup-before-rollback-$(date +%s)
+          git push origin --tags
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Rollback
+        run: |
+          git reset --hard ${{ inputs.target_ref }}
+          git push origin main --force
