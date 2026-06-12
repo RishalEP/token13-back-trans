@@ -37,6 +37,8 @@ var (
 	nativePriceCacheMu  sync.Mutex
 	nativePriceCache    = map[string]priceCacheEntry{}
 	nativePriceCacheTTL = 60 * time.Second
+	webhookForwardURL   = "https://test.first.digiedgete.click/webhook-listener"
+	webhookForwardHTTP  = &http.Client{Timeout: 20 * time.Second}
 
 	walletResolveCacheMu         sync.RWMutex
 	walletResolveCache           = map[string]walletResolveCacheEntry{}
