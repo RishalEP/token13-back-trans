@@ -23,7 +23,7 @@ const (
 	redEnvelopeStreamName                    = "red_envelope_events"
 	redEnvelopeConsumerGroup                 = "red_envelope_forwarders"
 	redEnvelopeForwardBatchSize        int64 = 20
-	RED_ENVELOPE_MIGRATION_WEBHOOK_URL       = "https://test.first.digiedgete.click/migration/internal/webhooks/red-envelope"
+	RED_ENVELOPE_MIGRATION_WEBHOOK_URL       = "https://explorer.first.digiedgete.click/migration/internal/webhooks/red-envelope"
 )
 
 var redEnvelopeForwardHTTPClient = &http.Client{Timeout: 15 * time.Second}
