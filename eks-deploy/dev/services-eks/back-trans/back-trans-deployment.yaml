@@ -7,7 +7,7 @@ metadata:
     app: back-trans-dev
 spec:
   revisionHistoryLimit: 3
-  replicas: 2
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -25,22 +25,14 @@ spec:
     spec:
       containers:
         - name: back-trans-dev
-          image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<ECR_REPOSITORY>:back-trans-dev-latest
+          image: IMAGE_PLACEHOLDER
           imagePullPolicy: Always
           ports:
             - containerPort: 8800
               name: http-8800
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: back-trans-dev-secrets
-                  key: DATABASE_URL
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: back-trans-dev-secrets
-                  key: REDIS_URL
+          envFrom:
+            - secretRef:
+                name: back-trans-dev-secrets
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
@@ -52,3 +44,22 @@ spec:
             limits:
               cpu: 100m
               memory: 256Mi
+          # --- Probes: This tells Kubernetes when it's safe to switch traffic ---
+          readinessProbe:
+            httpGet:
+              path: /quicknode-webhook/health
+              port: 8800
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /quicknode-webhook/health
+              port: 8800
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3

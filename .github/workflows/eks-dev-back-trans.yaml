@@ -15,8 +15,8 @@ env:
 
   # Notification metadata
   ENVIRONMENT: Development
-  IOS_VERSION: "1.4v"
-  ANDROID_VERSION: "1.4v"
+  IOS_VERSION: "1.5v"
+  ANDROID_VERSION: "1.5v"
   BACKEND_SERVICE: back-trans-dev
 
 jobs:
@@ -30,11 +30,8 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
-      JUMP_USER: ${{ secrets.SSH_JUMP_USER }}
-      JUMP_HOST: ${{ secrets.SSH_JUMP_HOST }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL_RDS_DEV }}
-      REDIS_URL: ${{ secrets.REDIS_URL_DEV }}
+      BASTION_INSTANCE_ID: ${{ secrets.BASTION_INSTANCE_ID }}
 
     steps:
       - name: Checkout
@@ -55,13 +52,46 @@ jobs:
       - name: Shift latest → rollback
         run: |
           set -euo pipefail
-          REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
-          SRC="${REPO}:${LATEST_TAG}"
-          DST="${REPO}:${ROLLBACK_TAG}"
-          if docker pull "${SRC}"; then
-            docker tag "${SRC}" "${DST}"
-            docker push "${DST}"
+          LATEST_DIGEST=$(aws ecr describe-images \
+            --region "$AWS_REGION" \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${LATEST_TAG}" \
+            --output json 2>/dev/null | jq -r '.imageDetails[0].imageDigest // empty')
+
+          ROLLBACK_DIGEST=$(aws ecr describe-images \
+            --region "$AWS_REGION" \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${ROLLBACK_TAG}" \
+            --output json 2>/dev/null | jq -r '.imageDetails[0].imageDigest // empty')
+
+          if [ -z "$LATEST_DIGEST" ]; then
+            echo "ℹ️ No latest image found, skipping rollback shift"
+            exit 0
           fi
+
+          if [ "$LATEST_DIGEST" = "$ROLLBACK_DIGEST" ]; then
+            echo "ℹ️ latest and rollback already point to same digest"
+            exit 0
+          fi
+
+          MANIFEST=$(aws ecr batch-get-image \
+            --region "$AWS_REGION" \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${LATEST_TAG}" \
+            --output json | jq -r '.images[0].imageManifest')
+
+          aws ecr batch-delete-image \
+            --region "$AWS_REGION" \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${ROLLBACK_TAG}" || true
+
+          aws ecr put-image \
+            --region "$AWS_REGION" \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-tag "${ROLLBACK_TAG}" \
+            --image-manifest "$MANIFEST"
+
+          echo "✅ Shifted latest → rollback successfully"
 
       - name: Build & push back-trans image
         id: build
@@ -72,54 +102,88 @@ jobs:
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> $GITHUB_OUTPUT
 
-      - name: Start SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_JUMP_PRIVATE_KEY }}
-
-      - name: Copy back-trans manifests to Bastion
+      - name: Generate Secure Deployment Payload
+        id: prep_payload
+        env:
+          SECRET_JSON: ${{ secrets.EKS_DEV_BACK_TRANS_SECRETS }}
+          LATEST_IMAGE: ${{ steps.build.outputs.IMAGE }}
         run: |
-          ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST 'mkdir -p ~/deploy/back-trans/dev/back-trans'
-          rsync -avz -e 'ssh -o StrictHostKeyChecking=no' ./eks-deploy/dev/services-eks/back-trans/ \
-                $JUMP_USER@$JUMP_HOST:~/deploy/back-trans/dev/back-trans
+          set -euo pipefail
+          
+          # 1. Format Secrets into a K8s Manifest
+          SECRET_MANIFEST=$(echo "$SECRET_JSON" | jq -r '
+            {
+              apiVersion: "v1",
+              kind: "Secret",
+              metadata: { name: "back-trans-dev-secrets", namespace: "dev" },
+              type: "Opaque",
+              data: (to_entries | map({key: .key, value: (.value | @base64)}) | from_entries)
+            }
+          ')
+
+          # 2. Read Local Files
+          DEPLOY_YML=$(cat ./eks-deploy/dev/services-eks/back-trans/back-trans-deployment.yaml)
+          SERVICE_YML=$(cat ./eks-deploy/dev/services-eks/back-trans/back-trans-service.yaml)
+          HPA_YML=$(cat ./eks-deploy/dev/services-eks/back-trans/back-trans-hpa.yaml)
+
+          # Replace IMAGE_PLACEHOLDER with latest image
+          DEPLOY_YML="${DEPLOY_YML//IMAGE_PLACEHOLDER/$LATEST_IMAGE}"
+
+          # 3. Construct the execution script (Simple & Readable)
+          cat << EOF > deploy_step.sh
+          set -euo pipefail
+          export HOME=/home/ubuntu
+          aws eks update-kubeconfig --region "${AWS_REGION}" --name "${EKS_CLUSTER_NAME}"
+
+          echo "Updating Kubernetes Resources..."
+          
+          kubectl apply -f - << 'K8S_SECRET'
+          $SECRET_MANIFEST
+          K8S_SECRET
+
+          kubectl apply -f - << 'K8S_DEPLOY'
+          $DEPLOY_YML
+          K8S_DEPLOY
+
+          kubectl apply -f - << 'K8S_SERVICE'
+          $SERVICE_YML
+          K8S_SERVICE
+
+          kubectl apply -f - << 'K8S_HPA'
+          $HPA_YML
+          K8S_HPA
+
+          echo "Restarting deployment to ensure fresh image pull..."
+          kubectl -n dev rollout restart deployment/back-trans-dev
+          kubectl -n dev rollout status deployment/back-trans-dev --timeout=3m
+          EOF
+
+          # 4. Package for SSM
+          echo "PAYLOAD=$(gzip -c deploy_step.sh | base64 -w 0)" >> $GITHUB_ENV
 
 
-      - name: Deploy back-trans to EKS via Bastion
+      - name: Deploy to EKS via AWS SSM
         run: |
-          ssh -o StrictHostKeyChecking=no $JUMP_USER@$JUMP_HOST \
-            "AWS_REGION=${AWS_REGION} EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME} LATEST_IMAGE=${{ steps.build.outputs.IMAGE }} \
-            DATABASE_URL='${DATABASE_URL}' REDIS_URL='${REDIS_URL}' \
-            bash -s" << 'EOSSH'
+          set -euo pipefail
+          SSM_PARAMS=$(jq -n --arg cmd "echo '$PAYLOAD' | base64 -d | gunzip | bash" '{commands: [$cmd]}')
 
-            set -euo pipefail
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$BASTION_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "$SSM_PARAMS" \
+            --query "Command.CommandId" --output text)
 
-            cd ~/deploy/back-trans/dev/back-trans
+          echo "⏳ Waiting for SSM Command: $COMMAND_ID"
+          while true; do
+            STATUS=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" --query "CommandInvocations[0].Status" --output text)
+            if [[ "$STATUS" == "Success" ]]; then
+              echo "✅ Success!"; break
+            elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+              echo "❌ Failed!"; aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$BASTION_INSTANCE_ID" --query "StandardErrorContent" --output text; exit 1
+            fi
+            sleep 5
+          done
 
-            KCTX="--context=explorer-prod"
-
-            echo "=== Creating and updating back-trans secrets at runtime ==="
-            kubectl $KCTX -n dev create secret generic back-trans-dev-secrets \
-              --from-literal=DATABASE_URL="${DATABASE_URL}" \
-              --from-literal=REDIS_URL="${REDIS_URL}" \
-              --dry-run=client -o yaml | kubectl $KCTX apply -f -
-
-            echo "--- Apply Deployment, Service ---"
-            kubectl $KCTX -n dev apply -f back-trans-deployment.yaml
-            kubectl $KCTX -n dev apply -f back-trans-service.yaml
-            kubectl $KCTX -n dev apply -f back-trans-hpa.yaml
-
-            echo "--- Force new rollout (permanent fix) ---"
-            kubectl $KCTX -n dev patch deployment back-trans-dev \
-              -p "{\"spec\": {\"template\": {\"metadata\": {\"annotations\": {\"force-reload\": \"$(date +%s)\"}}}}}"
-
-            echo "--- Update image and rollout ---"
-            kubectl $KCTX -n dev set image deployment/back-trans-dev \
-              back-trans-dev="$LATEST_IMAGE"
-
-            kubectl $KCTX -n dev rollout status deployment/back-trans-dev --timeout=3m
-
-            kubectl $KCTX -n dev get pods,svc,deploy -l app=back-trans-dev -o wide
-          EOSSH
       # ===============================
       # LARK NOTIFICATION (ALWAYS)
       # ===============================

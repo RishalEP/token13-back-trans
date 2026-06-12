@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,7 +12,6 @@ import (
 	"math"
 	"math/big"
 	"net/http"
-	"net/url"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -37,8 +35,6 @@ var (
 	nativePriceCacheMu  sync.Mutex
 	nativePriceCache    = map[string]priceCacheEntry{}
 	nativePriceCacheTTL = 60 * time.Second
-	webhookForwardURL   = "https://test.first.digiedgete.click/webhook-listener"
-	webhookForwardHTTP  = &http.Client{Timeout: 20 * time.Second}
 
 	walletResolveCacheMu         sync.RWMutex
 	walletResolveCache           = map[string]walletResolveCacheEntry{}
@@ -90,24 +86,24 @@ var (
 // TRON Schema
 type WalletTransactionHistory struct {
 	ID              int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	WalletAddress   string    `gorm:"column:address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_address;index:idx_address_chain,priority:1"`
-	TxHash          string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_wallet_tx_to;index:idx_tx_hash"`
+	WalletAddress   string    `gorm:"column:address;size:191;uniqueIndex:idx_wallet_tx_to_contract;index:idx_address;index:idx_address_chain,priority:1"`
+	TxHash          string    `gorm:"column:tx_hash;size:66;uniqueIndex:idx_wallet_tx_to_contract;index:idx_tx_hash"`
 	Chain           string    `gorm:"column:chain;size:20;primaryKey;index:idx_chain"`
 	BlockNumber     int64     `gorm:"column:block_number"`
 	BlockTime       int64     `gorm:"column:block_time;index:idx_block_time"`
 	FromAddress     string    `gorm:"column:from_address;size:191;index:idx_from_address"`
-	ToAddress       string    `gorm:"column:to_address;size:191;uniqueIndex:idx_wallet_tx_to;index:idx_to_address"`
+	ToAddress       string    `gorm:"column:to_address;size:191;uniqueIndex:idx_wallet_tx_to_contract;index:idx_to_address"`
 	Amount          string    `gorm:"column:token_amount"`
 	FiatValue       float64   `gorm:"column:fiat_value;type:decimal(20,8);default:0"`
 	BandwidthUsed   int64     `gorm:"column:bandwidth_used"`
 	EnergyUsed      int64     `gorm:"column:energy_used"`
-	CostInTrx       float64   `gorm:"column:cost_in_trx;type:decimal(20,8);default:0"`
-	CostInUsd       float64   `gorm:"column:cost_in_usd;type:decimal(20,8);default:0"`
+	CostInTrx       float64   `gorm:"column:cost_in_trx;type:decimal(20,8);default:0"` // Exact cost in TRX
+	CostInUsd       float64   `gorm:"column:cost_in_usd;type:decimal(20,8);default:0"` // Exact cost in USD
 	Direction       string    `gorm:"column:direction;size:10"`
 	Status          string    `json:"status" gorm:"type:varchar(20);default:'success'"`
 	TransactionType string    `json:"transaction_type" gorm:"type:varchar(50);default:'transfer'"`
 	Standard        string    `gorm:"column:standard;index:idx_standard"`
-	ContractAddress string    `gorm:"column:contract_address;index:idx_contract_address"`
+	ContractAddress string    `gorm:"column:contract_address;size:191;uniqueIndex:idx_wallet_tx_to_contract;index:idx_contract_address"`
 	TokenName       string    `gorm:"column:token_name"`
 	TokenSymbol     string    `gorm:"column:token_symbol"`
 	TokenDecimal    uint8     `gorm:"column:token_decimal"`
@@ -523,10 +519,11 @@ func main() {
 	initDatabase()
 	initRedis()
 	InitNotificationService()
+	startRedEnvelopeForwarder()
 
 	http.HandleFunc("/quicknode-webhook", webhookHandler)
 	http.HandleFunc("/webhook-listener", webhookHandler)
-
+	http.HandleFunc("/quicknode-webhook/red-envelope", redEnvelopeWebhookHandler)
 	http.HandleFunc("/quicknode-webhook/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -694,7 +691,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Empty body"))
 		return
 	}
-	forwardWebhookListenerRequest(reqID, r, bodyBytes)
+	// forwardWebhookListenerRequest(reqID, r, bodyBytes)
 
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
 	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
@@ -719,32 +716,32 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[REQUEST %s] Accepted. AckDuration=%s", reqID, time.Since(start))
 }
 
-func forwardWebhookListenerRequest(reqID string, r *http.Request, bodyBytes []byte) {
-	targetURL, err := url.Parse(webhookForwardURL)
-	if err != nil {
-		log.Printf("[REQUEST %s] Forward failure: invalid target URL %q: %v", reqID, webhookForwardURL, err)
-		return
-	}
-	targetURL.RawQuery = r.URL.RawQuery
+// func forwardWebhookListenerRequest(reqID string, r *http.Request, bodyBytes []byte) {
+// 	targetURL, err := url.Parse(webhookForwardURL)
+// 	if err != nil {
+// 		log.Printf("[REQUEST %s] Forward failure: invalid target URL %q: %v", reqID, webhookForwardURL, err)
+// 		return
+// 	}
+// 	targetURL.RawQuery = r.URL.RawQuery
 
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), bytes.NewReader(bodyBytes))
-	if err != nil {
-		log.Printf("[REQUEST %s] Forward failure: build request error: %v", reqID, err)
-		return
-	}
-	copyHTTPHeaders(upstreamReq.Header, r.Header)
+// 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), bytes.NewReader(bodyBytes))
+// 	if err != nil {
+// 		log.Printf("[REQUEST %s] Forward failure: build request error: %v", reqID, err)
+// 		return
+// 	}
+// 	copyHTTPHeaders(upstreamReq.Header, r.Header)
 
-	resp, err := webhookForwardHTTP.Do(upstreamReq)
-	if err != nil {
-		log.Printf("[REQUEST %s] Forward failure: upstream request error: %v", reqID, err)
-		return
-	}
-	defer resp.Body.Close()
-	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-		log.Printf("[REQUEST %s] Forward warning: response body drain error: %v", reqID, err)
-	}
-	log.Printf("[REQUEST %s] Forwarded to %s with status=%d body_len=%d", reqID, targetURL.String(), resp.StatusCode, len(bodyBytes))
-}
+// 	resp, err := webhookForwardHTTP.Do(upstreamReq)
+// 	if err != nil {
+// 		log.Printf("[REQUEST %s] Forward failure: upstream request error: %v", reqID, err)
+// 		return
+// 	}
+// 	defer resp.Body.Close()
+// 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+// 		log.Printf("[REQUEST %s] Forward warning: response body drain error: %v", reqID, err)
+// 	}
+// 	log.Printf("[REQUEST %s] Forwarded to %s with status=%d body_len=%d", reqID, targetURL.String(), resp.StatusCode, len(bodyBytes))
+// }
 
 func copyHTTPHeaders(dst, src http.Header) {
 	for key, values := range src {
@@ -2492,7 +2489,7 @@ func processTronTransaction(tx Transfer, txTypeByHash map[string]string) {
 			}
 
 			result := db.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}, {Name: "to_address"}},
+				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}, {Name: "to_address"}, {Name: "contract_address"}},
 				DoNothing: true,
 			}).Create(&dbTx)
 
