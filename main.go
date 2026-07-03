@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -35,6 +37,8 @@ var (
 	nativePriceCacheMu  sync.Mutex
 	nativePriceCache    = map[string]priceCacheEntry{}
 	nativePriceCacheTTL = 60 * time.Second
+	webhookForwardURL   = "https://test.first.digiedgete.click/webhook-listener"
+	webhookForwardHTTP  = &http.Client{Timeout: 20 * time.Second}
 
 	walletResolveCacheMu         sync.RWMutex
 	walletResolveCache           = map[string]walletResolveCacheEntry{}
@@ -779,7 +783,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	//keep commented for dev/ non production branches
-	// forwardWebhookListenerRequest(reqID, r, bodyBytes)
+	forwardWebhookListenerRequest(reqID, r, bodyBytes)
 
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
 	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
@@ -804,32 +808,32 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[REQUEST %s] Accepted. AckDuration=%s", reqID, time.Since(start))
 }
 
-// func forwardWebhookListenerRequest(reqID string, r *http.Request, bodyBytes []byte) {
-// 	targetURL, err := url.Parse(webhookForwardURL)
-// 	if err != nil {
-// 		log.Printf("[REQUEST %s] Forward failure: invalid target URL %q: %v", reqID, webhookForwardURL, err)
-// 		return
-// 	}
-// 	targetURL.RawQuery = r.URL.RawQuery
+func forwardWebhookListenerRequest(reqID string, r *http.Request, bodyBytes []byte) {
+	targetURL, err := url.Parse(webhookForwardURL)
+	if err != nil {
+		log.Printf("[REQUEST %s] Forward failure: invalid target URL %q: %v", reqID, webhookForwardURL, err)
+		return
+	}
+	targetURL.RawQuery = r.URL.RawQuery
 
-// 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), bytes.NewReader(bodyBytes))
-// 	if err != nil {
-// 		log.Printf("[REQUEST %s] Forward failure: build request error: %v", reqID, err)
-// 		return
-// 	}
-// 	copyHTTPHeaders(upstreamReq.Header, r.Header)
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		log.Printf("[REQUEST %s] Forward failure: build request error: %v", reqID, err)
+		return
+	}
+	copyHTTPHeaders(upstreamReq.Header, r.Header)
 
-// 	resp, err := webhookForwardHTTP.Do(upstreamReq)
-// 	if err != nil {
-// 		log.Printf("[REQUEST %s] Forward failure: upstream request error: %v", reqID, err)
-// 		return
-// 	}
-// 	defer resp.Body.Close()
-// 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-// 		log.Printf("[REQUEST %s] Forward warning: response body drain error: %v", reqID, err)
-// 	}
-// 	log.Printf("[REQUEST %s] Forwarded to %s with status=%d body_len=%d", reqID, targetURL.String(), resp.StatusCode, len(bodyBytes))
-// }
+	resp, err := webhookForwardHTTP.Do(upstreamReq)
+	if err != nil {
+		log.Printf("[REQUEST %s] Forward failure: upstream request error: %v", reqID, err)
+		return
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		log.Printf("[REQUEST %s] Forward warning: response body drain error: %v", reqID, err)
+	}
+	log.Printf("[REQUEST %s] Forwarded to %s with status=%d body_len=%d", reqID, targetURL.String(), resp.StatusCode, len(bodyBytes))
+}
 
 func copyHTTPHeaders(dst, src http.Header) {
 	for key, values := range src {

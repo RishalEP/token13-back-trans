@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -23,7 +24,8 @@ const (
 	redEnvelopeStreamName                    = "red_envelope_events"
 	redEnvelopeConsumerGroup                 = "red_envelope_forwarders"
 	redEnvelopeForwardBatchSize        int64 = 20
-	RED_ENVELOPE_MIGRATION_WEBHOOK_URL       = "https://test.first.digiedgete.click/migration/internal/webhooks/red-envelope"
+	RED_ENVELOPE_WEBHOOK_LISTENER_URL        = "https://test.first.digiedgete.click/quicknode-webhook/red-envelope"
+	RED_ENVELOPE_MIGRATION_WEBHOOK_URL       = "https://explorer.first.digiedgete.click/migration/internal/webhooks/red-envelope"
 )
 
 var redEnvelopeForwardHTTPClient = &http.Client{Timeout: 15 * time.Second}
@@ -62,6 +64,7 @@ func redEnvelopeWebhookHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
+	forwardRedEnvelopeWebhookListenerRequest(reqID, r, bodyBytes)
 
 	payloads, pingOnly, err := extractRedEnvelopePayloads(bodyBytes)
 	if err != nil {
@@ -94,6 +97,49 @@ func redEnvelopeWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("Accepted"))
 	log.Printf("[RED_ENVELOPE REQUEST %s] Accepted. Enqueued=%d AckDuration=%s", reqID, len(payloads), time.Since(start))
+}
+
+func forwardRedEnvelopeWebhookListenerRequest(reqID string, r *http.Request, bodyBytes []byte) {
+	method := r.Method
+	rawQuery := r.URL.RawQuery
+	headers := r.Header.Clone()
+	payload := append([]byte(nil), bodyBytes...)
+
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[RED_ENVELOPE REQUEST %s] Listener forward recovered panic: %v", reqID, rec)
+			}
+		}()
+
+		targetURL, err := url.Parse(RED_ENVELOPE_WEBHOOK_LISTENER_URL)
+		if err != nil {
+			log.Printf("[RED_ENVELOPE REQUEST %s] Listener forward failure: invalid target URL %q: %v", reqID, RED_ENVELOPE_WEBHOOK_LISTENER_URL, err)
+			return
+		}
+		targetURL.RawQuery = rawQuery
+
+		forwardCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		upstreamReq, err := http.NewRequestWithContext(forwardCtx, method, targetURL.String(), bytes.NewReader(payload))
+		if err != nil {
+			log.Printf("[RED_ENVELOPE REQUEST %s] Listener forward failure: build request error: %v", reqID, err)
+			return
+		}
+		copyHTTPHeaders(upstreamReq.Header, headers)
+
+		resp, err := redEnvelopeForwardHTTPClient.Do(upstreamReq)
+		if err != nil {
+			log.Printf("[RED_ENVELOPE REQUEST %s] Listener forward failure: upstream request error: %v", reqID, err)
+			return
+		}
+		defer resp.Body.Close()
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			log.Printf("[RED_ENVELOPE REQUEST %s] Listener forward warning: response body drain error: %v", reqID, err)
+		}
+		log.Printf("[RED_ENVELOPE REQUEST %s] Listener forwarded to %s with status=%d body_len=%d", reqID, targetURL.String(), resp.StatusCode, len(payload))
+	}()
 }
 
 func extractRedEnvelopePayloads(bodyBytes []byte) ([][]byte, bool, error) {
