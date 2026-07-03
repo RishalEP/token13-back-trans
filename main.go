@@ -508,6 +508,93 @@ const (
 	chainEventsStreamName     = "chain_events"
 )
 
+type chainMetadata struct {
+	CanonicalID string
+	Code        string
+	RedisKey    string
+	Name        string
+	NativeToken string
+	IsEVM       bool
+}
+
+var chainMetadataByID = map[string]chainMetadata{
+	"1":                                {CanonicalID: "1", Code: "ETH", RedisKey: "eth", Name: "Ethereum", NativeToken: "ETH", IsEVM: true},
+	"10":                               {CanonicalID: "10", Code: "OP", RedisKey: "10", Name: "Optimism", NativeToken: "ETH", IsEVM: true},
+	"30":                               {CanonicalID: "30", Code: "RSK", RedisKey: "30", Name: "Rootstock", NativeToken: "RBTC", IsEVM: true},
+	"56":                               {CanonicalID: "56", Code: "BSC", RedisKey: "bsc", Name: "BSC", NativeToken: "BNB", IsEVM: true},
+	"65":                               {CanonicalID: "65", Code: "TRON", RedisKey: "tron", Name: "Tron", NativeToken: "TRX", IsEVM: false},
+	"100":                              {CanonicalID: "100", Code: "GNO", RedisKey: "100", Name: "Gnosis", NativeToken: "XDAI", IsEVM: true},
+	"130":                              {CanonicalID: "130", Code: "UNI", RedisKey: "130", Name: "Unichain", NativeToken: "ETH", IsEVM: true},
+	"137":                              {CanonicalID: "137", Code: "POL", RedisKey: "pol", Name: "Polygon", NativeToken: "POL", IsEVM: true},
+	"146":                              {CanonicalID: "146", Code: "SONIC", RedisKey: "146", Name: "Sonic", NativeToken: "S", IsEVM: true},
+	"169":                              {CanonicalID: "169", Code: "MANTA", RedisKey: "169", Name: "Manta Pacific", NativeToken: "ETH", IsEVM: true},
+	"204":                              {CanonicalID: "204", Code: "OPBNB", RedisKey: "204", Name: "opBNB", NativeToken: "BNB", IsEVM: true},
+	"250":                              {CanonicalID: "250", Code: "FTM", RedisKey: "250", Name: "Fantom", NativeToken: "FTM", IsEVM: true},
+	"252":                              {CanonicalID: "252", Code: "FRAX", RedisKey: "252", Name: "Fraxtal", NativeToken: "frxETH", IsEVM: true},
+	"324":                              {CanonicalID: "324", Code: "ZKSYNC", RedisKey: "324", Name: "zkSync Era", NativeToken: "ETH", IsEVM: true},
+	"480":                              {CanonicalID: "480", Code: "WORLD", RedisKey: "480", Name: "World Chain", NativeToken: "ETH", IsEVM: true},
+	"1088":                             {CanonicalID: "1088", Code: "METIS", RedisKey: "1088", Name: "Metis", NativeToken: "METIS", IsEVM: true},
+	"1101":                             {CanonicalID: "1101", Code: "POLYGON_ZKEVM", RedisKey: "1101", Name: "Polygon zkEVM", NativeToken: "ETH", IsEVM: true},
+	"1284":                             {CanonicalID: "1284", Code: "GLMR", RedisKey: "1284", Name: "Moonbeam", NativeToken: "GLMR", IsEVM: true},
+	"1285":                             {CanonicalID: "1285", Code: "MOVR", RedisKey: "1285", Name: "Moonriver", NativeToken: "MOVR", IsEVM: true},
+	"1329":                             {CanonicalID: "1329", Code: "SEI", RedisKey: "1329", Name: "Sei EVM", NativeToken: "SEI", IsEVM: true},
+	"2741":                             {CanonicalID: "2741", Code: "ABSTRACT", RedisKey: "2741", Name: "Abstract", NativeToken: "ETH", IsEVM: true},
+	"5000":                             {CanonicalID: "5000", Code: "MNT", RedisKey: "5000", Name: "Mantle", NativeToken: "MNT", IsEVM: true},
+	"8453":                             {CanonicalID: "8453", Code: "BASE", RedisKey: "base", Name: "Base", NativeToken: "BASE ETH", IsEVM: true},
+	"34443":                            {CanonicalID: "34443", Code: "MODE", RedisKey: "34443", Name: "Mode", NativeToken: "ETH", IsEVM: true},
+	"42161":                            {CanonicalID: "42161", Code: "ARB", RedisKey: "42161", Name: "Arbitrum", NativeToken: "ETH", IsEVM: true},
+	"42220":                            {CanonicalID: "42220", Code: "CELO", RedisKey: "42220", Name: "Celo", NativeToken: "CELO", IsEVM: true},
+	"43114":                            {CanonicalID: "43114", Code: "AVAX", RedisKey: "43114", Name: "Avalanche", NativeToken: "AVAX", IsEVM: true},
+	"57073":                            {CanonicalID: "57073", Code: "INK", RedisKey: "57073", Name: "Ink", NativeToken: "ETH", IsEVM: true},
+	"59144":                            {CanonicalID: "59144", Code: "LINEA", RedisKey: "59144", Name: "Linea", NativeToken: "ETH", IsEVM: true},
+	"80094":                            {CanonicalID: "80094", Code: "BERA", RedisKey: "80094", Name: "Berachain", NativeToken: "BERA", IsEVM: true},
+	"81457":                            {CanonicalID: "81457", Code: "BLAST", RedisKey: "81457", Name: "Blast", NativeToken: "ETH", IsEVM: true},
+	"33139":                            {CanonicalID: "33139", Code: "APE", RedisKey: "33139", Name: "ApeChain", NativeToken: "APE", IsEVM: true},
+	"534352":                           {CanonicalID: "534352", Code: "SCROLL", RedisKey: "534352", Name: "Scroll", NativeToken: "ETH", IsEVM: true},
+	"000000000019d6689c085ae165831e93": {CanonicalID: "000000000019d6689c085ae165831e93", Code: "BTC", RedisKey: "btc", Name: "Bitcoin", NativeToken: "BTC", IsEVM: false},
+	"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": {CanonicalID: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", Code: "SOL", RedisKey: "sol", Name: "Solana", NativeToken: "SOL", IsEVM: false},
+}
+
+var chainAliasToCanonicalID = map[string]string{
+	"eth": "1", "ethereum": "1", "ethereum-mainnet": "1", "mainnet": "1",
+	"op": "10", "optimism": "10", "optimism-mainnet": "10", "optimistic-ethereum": "10",
+	"rsk": "30", "rootstock": "30", "rootstock-mainnet": "30",
+	"bsc": "56", "bsc-mainnet": "56", "binance": "56", "binance-smart-chain": "56",
+	"tron": "65", "tron-mainnet": "65", "trx": "65",
+	"gnosis": "100", "gnosis-mainnet": "100", "xdai": "100",
+	"uni": "130", "unichain": "130", "unichain-mainnet": "130",
+	"pol": "137", "polygon": "137", "polygon-mainnet": "137", "matic": "137", "matic-mainnet": "137",
+	"sonic": "146", "sonic-mainnet": "146",
+	"manta": "169", "manta-pacific": "169", "manta-pacific-mainnet": "169",
+	"opbnb": "204", "opbnb-mainnet": "204",
+	"ftm": "250", "fantom": "250", "fantom-mainnet": "250",
+	"frax": "252", "fraxtal": "252", "fraxtal-mainnet": "252",
+	"zksync": "324", "zksync-era": "324", "zksync-era-mainnet": "324",
+	"world": "480", "worldchain": "480", "world-chain": "480",
+	"metis": "1088", "metis-mainnet": "1088",
+	"polygon-zkevm": "1101", "polygon-zkevm-mainnet": "1101",
+	"glmr": "1284", "moonbeam": "1284", "moonbeam-mainnet": "1284",
+	"movr": "1285", "moonriver": "1285", "moonriver-mainnet": "1285",
+	"sei": "1329", "sei-evm": "1329", "sei-mainnet": "1329",
+	"abstract": "2741", "abstract-mainnet": "2741",
+	"mnt": "5000", "mantle": "5000", "mantle-mainnet": "5000",
+	"base": "8453", "base-mainnet": "8453", "base eth": "8453",
+	"mode": "34443", "mode-mainnet": "34443",
+	"arb": "42161", "arbitrum": "42161", "arbitrum-one": "42161", "arbitrum-mainnet": "42161",
+	"celo": "42220", "celo-mainnet": "42220",
+	"avax": "43114", "avalanche": "43114", "avalanche-mainnet": "43114", "avalanche-c-chain": "43114",
+	"ink": "57073", "ink-mainnet": "57073",
+	"linea": "59144", "linea-mainnet": "59144",
+	"bera": "80094", "berachain": "80094", "berachain-mainnet": "80094",
+	"blast": "81457", "blast-mainnet": "81457",
+	"ape": "33139", "apechain": "33139", "ape-chain": "33139",
+	"scroll": "534352", "scroll-mainnet": "534352",
+	"btc": "000000000019d6689c085ae165831e93", "bitcoin": "000000000019d6689c085ae165831e93", "bitcoin-mainnet": "000000000019d6689c085ae165831e93",
+	"000000000019d6689c085ae165831e93": "000000000019d6689c085ae165831e93",
+	"sol":                              "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", "solana": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", "solana-mainnet": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+	"5eykt4usfv8p8njdtrepy1vzqkqzkvdp": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+}
+
 //Load Addresses From DB into Redis
 
 // ---------------------------------------------------------
@@ -695,6 +782,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Empty body"))
 		return
 	}
+	//keep commented for dev/ non production branches
 	forwardWebhookListenerRequest(reqID, r, bodyBytes)
 
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
@@ -986,18 +1074,7 @@ func extractWebhookChainEvents(reqID string, bodyBytes []byte) ([]chainEventMess
 }
 
 func producerChainIDFromMoralisChainID(chainID string) string {
-	switch strings.ToLower(strings.TrimSpace(chainID)) {
-	case "0x1", "1", "eth", "ethereum", "ethereum-mainnet":
-		return "1"
-	case "0x89", "137", "pol", "polygon", "polygon-mainnet":
-		return "137"
-	case "0x2105", "8453", "base", "base-mainnet":
-		return "8453"
-	case "0x38", "56", "bsc", "bsc-mainnet", "binance-smart-chain":
-		return "56"
-	default:
-		return parseNumericChainIDOrFallback(chainID)
-	}
+	return canonicalChainID(chainID)
 }
 
 func producerChainIDFromQuickNodeNetwork(network string) string {
@@ -1005,17 +1082,24 @@ func producerChainIDFromQuickNodeNetwork(network string) string {
 	switch {
 	case n == "65" || n == "tron" || n == "tron-mainnet" || n == "trx" || strings.Contains(n, "tron"):
 		return "65"
-	case n == "8453" || n == "0x2105" || n == "base" || n == "base-mainnet" || strings.Contains(n, "base"):
-		return "8453"
-	case n == "137" || n == "0x89" || n == "pol" || n == "polygon-mainnet" || strings.Contains(n, "polygon"):
-		return "137"
-	case n == "56" || n == "0x38" || n == "bsc" || n == "bsc-mainnet" || strings.Contains(n, "bsc") || strings.Contains(n, "binance"):
-		return "56"
-	case n == "1" || n == "0x1" || n == "eth" || n == "ethereum-mainnet" || strings.Contains(n, "ethereum") || strings.Contains(n, "eth"):
-		return "1"
 	default:
-		return parseNumericChainIDOrFallback(network)
+		return canonicalChainID(network)
 	}
+}
+
+func canonicalChainID(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if _, ok := chainMetadataByID[trimmed]; ok {
+		return trimmed
+	}
+	lower := strings.ToLower(trimmed)
+	if canonical, ok := chainAliasToCanonicalID[lower]; ok {
+		return canonical
+	}
+	return parseNumericChainIDOrFallback(trimmed)
 }
 
 func parseNumericChainIDOrFallback(value string) string {
@@ -1034,6 +1118,18 @@ func parseNumericChainIDOrFallback(value string) string {
 		return strconv.FormatUint(parsed, 10)
 	}
 	return strings.ToLower(trimmed)
+}
+
+func isDecimalString(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeChainEventWalletAddress(chainID, walletAddress string) string {
@@ -1111,38 +1207,41 @@ func isTrackedWalletAddress(chainID, walletAddress string) (bool, error) {
 // 5. PAYLOAD HANDLERS
 // ---------------------------------------------------------
 type evmChainInfo struct {
-	Chain    string
-	RedisKey string
+	Chain             string
+	RedisKey          string
+	ChainID           string
+	ChainName         string
+	NativeTokenSymbol string
 }
 
 func chainInfoFromMoralisChainId(chainId string) evmChainInfo {
-	switch strings.ToLower(chainId) {
-	case "0x1":
-		return evmChainInfo{Chain: "ETH", RedisKey: "eth"}
-	case "0x89":
-		return evmChainInfo{Chain: "POL", RedisKey: "pol"}
-	case "0x2105":
-		return evmChainInfo{Chain: "BASE", RedisKey: "base"}
-	case "0x38":
-		return evmChainInfo{Chain: "BSC", RedisKey: "bsc"}
-	default:
-		return evmChainInfo{Chain: "ETH", RedisKey: "eth"}
-	}
+	return evmChainInfoFromValue(chainId)
 }
 
 func chainInfoFromQuickNodeNetwork(network string) evmChainInfo {
-	n := strings.ToLower(strings.TrimSpace(network))
-	switch {
-	case n == "8453" || n == "0x2105" || strings.Contains(n, "base"):
-		return evmChainInfo{Chain: "BASE", RedisKey: "base"}
-	case n == "137" || n == "0x89" || strings.Contains(n, "polygon") || n == "pol":
-		return evmChainInfo{Chain: "POL", RedisKey: "pol"}
-	case n == "56" || n == "0x38" || strings.Contains(n, "bsc") || strings.Contains(n, "binance"):
-		return evmChainInfo{Chain: "BSC", RedisKey: "bsc"}
-	case n == "1" || n == "0x1" || strings.Contains(n, "ethereum") || strings.Contains(n, "eth"):
-		return evmChainInfo{Chain: "ETH", RedisKey: "eth"}
-	default:
-		return evmChainInfo{Chain: "ETH", RedisKey: "eth"}
+	return evmChainInfoFromValue(network)
+}
+
+func evmChainInfoFromValue(value string) evmChainInfo {
+	canonical := canonicalChainID(value)
+	if meta, ok := chainMetadataByID[canonical]; ok && meta.IsEVM {
+		return evmChainInfo{
+			Chain:             meta.Code,
+			RedisKey:          meta.RedisKey,
+			ChainID:           meta.CanonicalID,
+			ChainName:         meta.Name,
+			NativeTokenSymbol: meta.NativeToken,
+		}
+	}
+	if canonical == "" {
+		return evmChainInfo{Chain: "ETH", RedisKey: "eth", ChainID: "1", ChainName: "Ethereum", NativeTokenSymbol: "ETH"}
+	}
+	return evmChainInfo{
+		Chain:             strings.ToUpper(canonical),
+		RedisKey:          canonical,
+		ChainID:           canonical,
+		ChainName:         "Chain " + canonical,
+		NativeTokenSymbol: strings.ToUpper(canonical),
 	}
 }
 
@@ -2614,35 +2713,7 @@ func processEvmTransaction(tx Transfer, chainInfo evmChainInfo, txTypeByHash map
 				CreatedAt:        time.Now(),
 			}
 
-			if dbTx.TokenName == "" && tx.Contract == "" {
-				if chainInfo.Chain == "BASE" {
-					dbTx.TokenName = "Base"
-					dbTx.TokenSymbol = "ETH"
-				} else if chainInfo.Chain == "ETH" {
-					dbTx.TokenName = "Ethereum"
-					dbTx.TokenSymbol = "ETH"
-				} else if chainInfo.Chain == "POL" {
-					dbTx.TokenName = "Polygon"
-					dbTx.TokenSymbol = "POL"
-				} else if chainInfo.Chain == "BSC" {
-					dbTx.TokenName = "Binance Smart Chain"
-					dbTx.TokenSymbol = "BNB"
-				}
-			}
-
-			if chainInfo.Chain == "ETH" {
-				dbTx.ChainId = 1
-				dbTx.ChainName = "Ethereum"
-			} else if chainInfo.Chain == "POL" {
-				dbTx.ChainId = 137
-				dbTx.ChainName = "Polygon"
-			} else if chainInfo.Chain == "BASE" {
-				dbTx.ChainId = 8453
-				dbTx.ChainName = "Base"
-			} else if chainInfo.Chain == "BSC" {
-				dbTx.ChainId = 56
-				dbTx.ChainName = "BSC"
-			}
+			applyEvmChainMetadata(&dbTx, chainInfo, tx.Contract == "")
 
 			result := db.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
@@ -2751,36 +2822,7 @@ func processMoralisNativeTx(tx MoralisTx, chainInfo evmChainInfo, blockNumber in
 				GasLimit:         parseInt64(tx.Gas),
 			}
 
-			if dbTx.TokenName == "" {
-				if chainInfo.Chain == "BASE" {
-					dbTx.TokenName = "Base"
-					dbTx.TokenSymbol = "ETH"
-				} else if chainInfo.Chain == "ETH" {
-					dbTx.TokenName = "Ethereum"
-					dbTx.TokenSymbol = "ETH"
-				} else if chainInfo.Chain == "POL" {
-					dbTx.TokenName = "Polygon"
-					dbTx.TokenSymbol = "POL"
-				} else if chainInfo.Chain == "BSC" {
-					dbTx.TokenName = "Binance Smart Chain"
-					dbTx.TokenSymbol = "BNB"
-				}
-			}
-
-			// If we had more info from chainInfo
-			if chainInfo.Chain == "ETH" {
-				dbTx.ChainId = 1
-				dbTx.ChainName = "Ethereum"
-			} else if chainInfo.Chain == "POL" {
-				dbTx.ChainId = 137
-				dbTx.ChainName = "Polygon"
-			} else if chainInfo.Chain == "BASE" {
-				dbTx.ChainId = 8453
-				dbTx.ChainName = "Base"
-			} else if chainInfo.Chain == "BSC" {
-				dbTx.ChainId = 56
-				dbTx.ChainName = "BSC"
-			}
+			applyEvmChainMetadata(&dbTx, chainInfo, true)
 
 			result := db.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
@@ -2900,35 +2942,7 @@ func processMoralisInternalTx(internalTx MoralisInternalTx, txMap map[string]Mor
 				GasLimit:         parseInt64(txRef.Gas),
 			}
 
-			if dbTx.TokenName == "" {
-				if chainInfo.Chain == "BASE" {
-					dbTx.TokenName = "Base"
-					dbTx.TokenSymbol = "ETH"
-				} else if chainInfo.Chain == "ETH" {
-					dbTx.TokenName = "Ethereum"
-					dbTx.TokenSymbol = "ETH"
-				} else if chainInfo.Chain == "POL" {
-					dbTx.TokenName = "Polygon"
-					dbTx.TokenSymbol = "POL"
-				} else if chainInfo.Chain == "BSC" {
-					dbTx.TokenName = "Binance Smart Chain"
-					dbTx.TokenSymbol = "BNB"
-				}
-			}
-
-			if chainInfo.Chain == "ETH" {
-				dbTx.ChainId = 1
-				dbTx.ChainName = "Ethereum"
-			} else if chainInfo.Chain == "POL" {
-				dbTx.ChainId = 137
-				dbTx.ChainName = "Polygon"
-			} else if chainInfo.Chain == "BASE" {
-				dbTx.ChainId = 8453
-				dbTx.ChainName = "Base"
-			} else if chainInfo.Chain == "BSC" {
-				dbTx.ChainId = 56
-				dbTx.ChainName = "BSC"
-			}
+			applyEvmChainMetadata(&dbTx, chainInfo, true)
 
 			result := db.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
@@ -3052,19 +3066,7 @@ func processMoralisErc20Approval(approval MoralisErc20Approval, txMap map[string
 				GasLimit:         parseInt64(txRef.Gas),
 			}
 
-			if chainInfo.Chain == "ETH" {
-				dbTx.ChainId = 1
-				dbTx.ChainName = "Ethereum"
-			} else if chainInfo.Chain == "POL" {
-				dbTx.ChainId = 137
-				dbTx.ChainName = "Polygon"
-			} else if chainInfo.Chain == "BASE" {
-				dbTx.ChainId = 8453
-				dbTx.ChainName = "Base"
-			} else if chainInfo.Chain == "BSC" {
-				dbTx.ChainId = 56
-				dbTx.ChainName = "BSC"
-			}
+			applyEvmChainMetadata(&dbTx, chainInfo, false)
 
 			result := db.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
@@ -3159,19 +3161,7 @@ func processMoralisErc20Transfer(transfer MoralisErc20Transfer, txMap map[string
 				GasLimit:         parseInt64(txRef.Gas),
 			}
 
-			if chainInfo.Chain == "ETH" {
-				dbTx.ChainId = 1
-				dbTx.ChainName = "Ethereum"
-			} else if chainInfo.Chain == "POL" {
-				dbTx.ChainId = 137
-				dbTx.ChainName = "Polygon"
-			} else if chainInfo.Chain == "BASE" {
-				dbTx.ChainId = 8453
-				dbTx.ChainName = "Base"
-			} else if chainInfo.Chain == "BSC" {
-				dbTx.ChainId = 56
-				dbTx.ChainName = "BSC"
-			}
+			applyEvmChainMetadata(&dbTx, chainInfo, false)
 
 			result := db.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "address"}, {Name: "tx_hash"}},
@@ -3419,21 +3409,17 @@ func userBalanceRedisKey(walletID, chainID, address string) string {
 }
 
 func nativeTokenAddress(chainID string) string {
+	canonical := canonicalChainID(chainID)
+	if meta, ok := chainMetadataByID[canonical]; ok && meta.NativeToken != "" {
+		return meta.NativeToken
+	}
 	switch strings.ToLower(strings.TrimSpace(chainID)) {
-	case "eth", "ethereum", "1", "0x1", "ethereum-mainnet":
-		return "ETH"
 	case "tron", "tron-mainnet", "trx":
 		return "TRX"
 	case "btc", "bitcoin", "bitcoin-mainnet", "000000000019d6689c085ae165831e93":
 		return "BTC"
 	case "sol", "solana", "solana-mainnet", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
 		return "SOL"
-	case "pol", "polygon", "137", "0x89", "polygon-mainnet":
-		return "POL"
-	case "base", "8453", "0x2105", "base-mainnet":
-		return "BASE ETH"
-	case "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain":
-		return "BNB"
 	default:
 		trimmed := strings.TrimSpace(chainID)
 		if trimmed == "" {
@@ -3441,6 +3427,58 @@ func nativeTokenAddress(chainID string) string {
 		}
 		return strings.ToUpper(trimmed)
 	}
+}
+
+func applyEvmChainMetadata(dbTx *EvmTransactionHistory, chainInfo evmChainInfo, setNativeToken bool) {
+	if dbTx == nil {
+		return
+	}
+	chainID := strings.TrimSpace(chainInfo.ChainID)
+	if chainID == "" {
+		candidates := getChainSynonyms(chainInfo.RedisKey)
+		if len(candidates) == 0 {
+			candidates = getChainSynonyms(chainInfo.Chain)
+		}
+		if len(candidates) > 0 {
+			chainID = candidates[0]
+		}
+	}
+	if parsed := parseInt64(chainID); parsed > 0 {
+		dbTx.ChainId = parsed
+	}
+	if strings.TrimSpace(chainInfo.ChainName) != "" {
+		dbTx.ChainName = chainInfo.ChainName
+	} else if dbTx.ChainId > 0 {
+		dbTx.ChainName = "Chain " + strconv.FormatInt(dbTx.ChainId, 10)
+	}
+	if setNativeToken && dbTx.TokenName == "" {
+		dbTx.TokenName = dbTx.ChainName
+		if dbTx.TokenName == "" {
+			dbTx.TokenName = chainInfo.Chain
+		}
+		dbTx.TokenSymbol = nativeTokenSymbolForChainInfo(chainInfo)
+	}
+}
+
+func nativeTokenSymbolForChainInfo(chainInfo evmChainInfo) string {
+	if strings.TrimSpace(chainInfo.NativeTokenSymbol) != "" {
+		if strings.EqualFold(chainInfo.NativeTokenSymbol, "BASE ETH") {
+			return "ETH"
+		}
+		return chainInfo.NativeTokenSymbol
+	}
+	if strings.TrimSpace(chainInfo.RedisKey) != "" {
+		symbol := nativeTokenAddress(chainInfo.RedisKey)
+		if strings.EqualFold(symbol, "BASE ETH") {
+			return "ETH"
+		}
+		return symbol
+	}
+	symbol := nativeTokenAddress(chainInfo.Chain)
+	if strings.EqualFold(symbol, "BASE ETH") {
+		return "ETH"
+	}
+	return symbol
 }
 
 func normalizeAddress(chainID, address string) string {
@@ -3451,10 +3489,10 @@ func normalizeAddress(chainID, address string) string {
 	switch {
 	case c == "tron" || c == "tron-mainnet" || c == "trx" || c == "65":
 		return normalizeTronAddress(address)
-	case c == "eth" || c == "pol" || c == "base" || c == "bsc" || c == "1" || c == "137" || c == "8453" || c == "56":
-		return strings.ToLower(address)
+	case isEvmChain(c) || looksLikeEvmAddress(address):
+		return strings.ToLower(strings.TrimSpace(address))
 	default:
-		return address
+		return strings.TrimSpace(address)
 	}
 }
 
@@ -3476,7 +3514,7 @@ func normalizeTokenAddress(chainID, tokenAddress string) string {
 			return nativeTokenAddress("tron")
 		}
 		return normalizeTronAddress(t)
-	case c == "eth" || c == "pol" || c == "base" || c == "bsc" || c == "1" || c == "137" || c == "8453" || c == "56":
+	case isEvmChain(c) || looksLikeEvmAddress(t):
 		if looksLikeEvmAddress(t) {
 			return strings.ToLower(t)
 		}
@@ -3725,30 +3763,31 @@ func resolveWalletAddresses(chainID, address string) ([]WalletAddress, error) {
 }
 
 func getChainSynonyms(chainID string) []string {
-	c := strings.ToLower(chainID)
-	switch c {
-	case "eth", "ethereum", "1", "0x1", "ethereum-mainnet":
-		return []string{"1"}
-	case "tron", "tron-mainnet", "trx", "65":
-		return []string{"65"}
-	case "btc", "bitcoin", "bitcoin-mainnet", "000000000019d6689c085ae165831e93":
-		return []string{"000000000019d6689c085ae165831e93"}
-	case "sol", "solana", "solana-mainnet", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
-		return []string{"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"}
-	case "pol", "polygon", "137", "0x89", "polygon-mainnet":
-		return []string{"137"}
-	case "base", "8453", "0x2105", "base-mainnet":
-		return []string{"8453"}
-	case "bsc", "56", "0x38", "bsc-mainnet", "binance-smart-chain":
-		return []string{"56"}
-	default:
-		return []string{chainID, strings.ToLower(chainID), strings.ToUpper(chainID)}
+	trimmed := strings.TrimSpace(chainID)
+	if trimmed == "" {
+		return nil
 	}
+	canonical := canonicalChainID(trimmed)
+	candidates := []string{canonical, trimmed, strings.ToLower(trimmed), strings.ToUpper(trimmed)}
+	if canonical != "" && isDecimalString(canonical) {
+		if parsed, err := strconv.ParseUint(canonical, 10, 64); err == nil {
+			candidates = append(candidates, fmt.Sprintf("0x%x", parsed), fmt.Sprintf("0X%X", parsed))
+		}
+	}
+	for alias, aliasCanonical := range chainAliasToCanonicalID {
+		if aliasCanonical == canonical {
+			candidates = append(candidates, alias, strings.ToUpper(alias))
+		}
+	}
+	return uniqueNonEmptyStrings(candidates)
 }
 
 func isEvmChain(chainID string) bool {
-	c := strings.ToLower(chainID)
-	return c == "eth" || c == "pol" || c == "base" || c == "bsc" || c == "1" || c == "137" || c == "8453" || c == "56" || c == "ethereum" || c == "polygon"
+	canonical := canonicalChainID(chainID)
+	if meta, ok := chainMetadataByID[canonical]; ok {
+		return meta.IsEVM
+	}
+	return isDecimalString(canonical)
 }
 
 func contains(slice []string, val string) bool {
