@@ -666,19 +666,7 @@ func initDatabase() {
 		log.Fatalf("Failed to connect to db: %v", err)
 	}
 
-	if err := db.AutoMigrate(
-		&WalletTransactionHistory{},
-		&EvmTransactionHistory{},
-		&BtcTransactionHistory{},
-		&SolTransactionHistory{},
-		&UserBalance{},
-		&WalletAddress{},
-		&UserWalletDevice{},
-		&NotificationLog{},
-	); err != nil {
-		log.Fatalf("AutoMigrate failed: %v", err)
-	}
-	log.Println("Connected to DB and Tables Checked")
+	log.Println("Connected to DB")
 }
 
 func initRedis() {
@@ -706,45 +694,6 @@ func initRedis() {
 	} else {
 		log.Println("Connected to Redis")
 	}
-}
-func AutoMigrate(gdb *gorm.DB) error {
-	if gdb == nil {
-		return fmt.Errorf("db is nil")
-	}
-	orig := gdb.Config.DisableForeignKeyConstraintWhenMigrating
-	gdb.Config.DisableForeignKeyConstraintWhenMigrating = true
-	err := gdb.AutoMigrate(
-		&Wallet{},
-		&WalletAddress{},
-		&UserBalance{},
-		&UserWalletDevice{},
-		&EvmTransactionHistory{},
-		&SolTransactionHistory{},
-	)
-	gdb.Config.DisableForeignKeyConstraintWhenMigrating = orig
-	if err != nil {
-		return err
-	}
-
-	// Verify crucial column addition for Wallet table
-	if !gdb.Migrator().HasColumn(&Wallet{}, "is_private_key_import") {
-		return fmt.Errorf("migration failed: column is_private_key_import missing in wallets table")
-	}
-
-	// Migration: allow the same chain/address to exist across different wallet IDs.
-	// Previous schema enforced global uniqueness on (chain_id, address) via uq_chain_address.
-	if gdb.Migrator().HasIndex(&WalletAddress{}, "uq_chain_address") {
-		if err := gdb.Migrator().DropIndex(&WalletAddress{}, "uq_chain_address"); err != nil {
-			return fmt.Errorf("failed to drop legacy index uq_chain_address: %w", err)
-		}
-	}
-	if !gdb.Migrator().HasIndex(&WalletAddress{}, "uq_wallet_chain_address") {
-		if err := gdb.Migrator().CreateIndex(&WalletAddress{}, "uq_wallet_chain_address"); err != nil {
-			return fmt.Errorf("failed to create index uq_wallet_chain_address: %w", err)
-		}
-	}
-
-	return nil
 }
 
 // ---------------------------------------------------------
@@ -782,8 +731,9 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Empty body"))
 		return
 	}
-	//keep commented for dev/ non production branches
-	forwardWebhookListenerRequest(reqID, r, bodyBytes)
+	if isProdEnvironment() {
+		forwardWebhookListenerRequest(reqID, r, bodyBytes)
+	}
 
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
 	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
