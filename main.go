@@ -731,8 +731,9 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Empty body"))
 		return
 	}
-	//keep commented for dev/ non production branches
-	//forwardWebhookListenerRequest(reqID, r, bodyBytes)
+	if isProdEnvironment() {
+		forwardWebhookListenerRequest(reqID, r, bodyBytes)
+	}
 
 	log.Printf("[REQUEST %s] Received. Method: %s, URL: %s, Content-Length: %d, Actual body length: %d", reqID, r.Method, r.URL.Path, r.ContentLength, len(bodyBytes))
 	log.Printf("[REQUEST %s] Payload body: [%s]", reqID, string(bodyBytes))
