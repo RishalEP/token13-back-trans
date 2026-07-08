@@ -25,7 +25,8 @@ const (
 	redEnvelopeConsumerGroup                 = "red_envelope_forwarders"
 	redEnvelopeForwardBatchSize        int64 = 20
 	RED_ENVELOPE_WEBHOOK_LISTENER_URL        = "https://test.first.digiedgete.click/quicknode-webhook/red-envelope"
-	RED_ENVELOPE_MIGRATION_WEBHOOK_URL       = "https://test.first.digiedgete.click/migration/internal/webhooks/red-envelope"
+	redEnvelopeMigrationWebhookURLDev        = "https://test.first.digiedgete.click/migration/internal/webhooks/red-envelope"
+	redEnvelopeMigrationWebhookURLProd       = "https://explorer.first.digiedgete.click/migration/internal/webhooks/red-envelope"
 )
 
 var redEnvelopeForwardHTTPClient = &http.Client{Timeout: 15 * time.Second}
@@ -64,7 +65,9 @@ func redEnvelopeWebhookHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
-	forwardRedEnvelopeWebhookListenerRequest(reqID, r, bodyBytes)
+	if isProdEnvironment() {
+		forwardRedEnvelopeWebhookListenerRequest(reqID, r, bodyBytes)
+	}
 
 	payloads, pingOnly, err := extractRedEnvelopePayloads(bodyBytes)
 	if err != nil {
@@ -140,6 +143,17 @@ func forwardRedEnvelopeWebhookListenerRequest(reqID string, r *http.Request, bod
 		}
 		log.Printf("[RED_ENVELOPE REQUEST %s] Listener forwarded to %s with status=%d body_len=%d", reqID, targetURL.String(), resp.StatusCode, len(payload))
 	}()
+}
+
+func isProdEnvironment() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("ENVIRORNMENT")), "PROD")
+}
+
+func redEnvelopeMigrationWebhookURL() string {
+	if isProdEnvironment() {
+		return redEnvelopeMigrationWebhookURLProd
+	}
+	return redEnvelopeMigrationWebhookURLDev
 }
 
 func extractRedEnvelopePayloads(bodyBytes []byte) ([][]byte, bool, error) {
@@ -235,9 +249,9 @@ func startRedEnvelopeForwarder() {
 		return
 	}
 
-	targetURL := strings.TrimSpace(RED_ENVELOPE_MIGRATION_WEBHOOK_URL)
+	targetURL := strings.TrimSpace(redEnvelopeMigrationWebhookURL())
 	if targetURL == "" {
-		log.Printf("[RED_ENVELOPE FORWARDER] RED_ENVELOPE_MIGRATION_WEBHOOK_URL is empty; forwarder disabled")
+		log.Printf("[RED_ENVELOPE FORWARDER] red envelope migration webhook URL is empty; forwarder disabled")
 		return
 	}
 
